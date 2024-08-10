@@ -71,7 +71,7 @@ def test_download_speedtest() -> float:
     return MBps
 
 
-def get_speed(name: str):
+def test_speed(name: str):
     url = config_args.controller_url + f"/proxies/🔰 节点选择"
     response = requests.put(url, json={"name": name})
     if response.status_code // 100 != 2 or response.text:
@@ -117,26 +117,38 @@ def replace_name(names: Iterable[str], info: dict[str, tuple[float, int]]) -> li
     # return sorted(new_names, key=lambda x: int(x.split(" - ")[1]), reverse=True)
 
 
+def sl_from_name(name: str) -> tuple[float, int]:
+    latency, speed = name.split(" - ")[0:2]
+    return -float(speed), int(latency)
+
+
 def main():
     with open(config_args.profile_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     proxies = [p["name"] for p in config["proxies"]]
     valid = get_latency(proxies)
     logger.info(f"get {len(valid)} valid proxies.")
-    if len(valid) > test_args.max_num_proxy_tested:
+    if len(valid) > test_args.max_num_proxy_tested and not test_args.latency_only:
         valid = dict(sorted(valid.items(), key=lambda x: x[1])[: test_args.max_num_proxy_tested])
 
     info: dict[str, tuple[float, int]] = {}
     for i, (name, latency) in enumerate(valid.items()):
-        logger.info(f"[{i+1}/{len(valid)}] Testing speed for proxy {name}. Latency: {latency}ms")
-        info[name] = (get_speed(name), latency)
+        if not test_args.latency_only:
+            logger.info(f"[{i+1}/{len(valid)}] Testing speed for proxy {name}. Latency: {latency}ms")
+            speed = test_speed(name)
+        else:
+            try:
+                speed = float(name.split(" - ")[1])
+            except (ValueError, IndexError):
+                speed = 0.0
+        info[name] = (speed, latency)
 
     replaced_names = replace_name(proxies, info)
     for new_name, proxy in zip(replaced_names, config["proxies"]):
         proxy["name"] = new_name
-    config["proxies"] = sorted(config["proxies"], key=lambda x: float(x["name"].split(" - ")[1]), reverse=True)
+    config["proxies"] = sorted(config["proxies"], key=lambda x: sl_from_name(x["name"]))
 
-    replaced_names = sorted(replaced_names, key=lambda x: float(x.split(" - ")[1]), reverse=True)
+    replaced_names = sorted(replaced_names, key=sl_from_name)
     for start, group in zip(test_args.group_proxy_start, config["proxy-groups"]):
         if start == -1:
             continue

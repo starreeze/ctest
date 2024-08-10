@@ -32,6 +32,7 @@ class TestArgs:
     )
     max_num_proxy_tested: int = field(default=10, metadata={"help": "if not set it will be VERY time-consuming"})
     load_balance_thres: int = field(default=3, metadata={"help": "the min MB/s for load balancing"})
+    latency_only: bool = field(default=False, metadata={"help": "only test latency"})
 
 
 config_args, test_args = HfArgumentParser([Config, TestArgs]).parse_args_into_dataclasses()  # type: ignore
