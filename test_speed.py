@@ -67,16 +67,15 @@ def test_download_speedtest() -> float:
         logger.warning(f"Error during speedtest: {e}")
         return 0
     MBps = bps / (1024 * 1024 * 8)
-    logger.info(f"speedtest download speed: {MBps:.2f} MB/s")
     return MBps
 
 
-def test_speed(name: str):
+def test_speed_single(name: str):
     url = config_args.controller_url + f"/proxies/🔰 节点选择"
     response = requests.put(url, json={"name": name})
     if response.status_code // 100 != 2 or response.text:
         logger.error(f"Failed to set proxy {name}: {response.text}")
-        return 0
+        return 0.0
     else:
         # return test_download_url(test_args.speed_test_url, test_args.speed_duration, test_args.speed_window_size, test_args.proxies)
         return test_download_speedtest()
@@ -106,6 +105,32 @@ def get_latency(proxies: list[str]) -> dict[str, int]:
     return {key: value for key, value in latency.items() if value < test_args.latency_timeout}
 
 
+def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
+    "return valid proxy names and their download speed in MB/s and latency in ms"
+    speed_latency: dict[str, tuple[float, int]] = {}
+    num_success = 0
+    try:
+        for i, (name, latency) in enumerate(latencies):
+            if not test_args.latency_only:
+                if num_success >= test_args.max_num:
+                    break
+                logger.debug(f"Testing proxy {name}. Latency: {latency}ms\n")
+                logger.info(f"Progress: Success - [{num_success}/{test_args.max_num}]; All - [{i+1}/{len(latencies)}]")
+                speed = test_speed_single(name)
+                logger.info(f"Speed for {name}: {speed:.2f} MB/s")
+                if speed >= test_args.load_balance_thres:
+                    num_success += 1
+            else:
+                try:
+                    speed = float(name.split(" - ")[1])
+                except (ValueError, IndexError):
+                    speed = 0.0
+            speed_latency[name] = (speed, latency)
+    except KeyboardInterrupt:
+        logger.warning("KeyboardInterrupt detected, saving current results...")
+    return speed_latency
+
+
 def replace_name(names: Iterable[str], info: dict[str, tuple[float, int]]) -> list[str]:
     new_names = []
     for name in names:
@@ -126,24 +151,14 @@ def main():
     with open(config_args.profile_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     proxies = [p["name"] for p in config["proxies"]]
+
     valid = get_latency(proxies)
     logger.info(f"get {len(valid)} valid proxies.")
-    if len(valid) > test_args.max_num_proxy_tested and not test_args.latency_only:
-        valid = dict(sorted(valid.items(), key=lambda x: x[1])[: test_args.max_num_proxy_tested])
+    valid = list(sorted(valid.items(), key=lambda x: x[1]))
 
-    info: dict[str, tuple[float, int]] = {}
-    for i, (name, latency) in enumerate(valid.items()):
-        if not test_args.latency_only:
-            logger.info(f"[{i+1}/{len(valid)}] Testing speed for proxy {name}. Latency: {latency}ms")
-            speed = test_speed(name)
-        else:
-            try:
-                speed = float(name.split(" - ")[1])
-            except (ValueError, IndexError):
-                speed = 0.0
-        info[name] = (speed, latency)
+    name2ls = get_speed(valid)
 
-    replaced_names = replace_name(proxies, info)
+    replaced_names = replace_name(proxies, name2ls)
     for new_name, proxy in zip(replaced_names, config["proxies"]):
         proxy["name"] = new_name
     config["proxies"] = sorted(config["proxies"], key=lambda x: sl_from_name(x["name"]))

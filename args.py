@@ -30,8 +30,8 @@ class TestArgs:
         default_factory=lambda: [3, 0, -2, -1, -1, 2, 2, 2, -1, -1, 3],
         metadata={"help": ">0: start position for proxies; -1: no proxy, copy all; -2: load balance"},
     )
-    max_num_proxy_tested: int = field(default=10, metadata={"help": "if not set it will be VERY time-consuming"})
-    load_balance_thres: int = field(default=3, metadata={"help": "the min MB/s for load balancing"})
+    max_num: int = field(default=3, metadata={"help": "the max valid proxies to return in speed test"})
+    load_balance_thres: float = field(default=1.5, metadata={"help": "the min MB/s to be valid for load balancing"})
     latency_only: bool = field(default=False, metadata={"help": "only test latency"})
 
 
