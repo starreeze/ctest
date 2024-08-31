@@ -4,7 +4,9 @@
 # @Author  : Shangyu.Xing (starreeze@foxmail.com)
 
 from __future__ import annotations
-from args import logger, config_args as args
+
+from args import config_args as args
+from args import logger
 
 
 def get_unsupported_name(profile: list[str]) -> list[str]:

@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-import yaml
 import time
-import requests
 from typing import Iterable
+
+import requests
 import speedtest
+import yaml
 from func_timeout import func_set_timeout
+
+from args import config_args, logger, test_args
 from iterwrap import retry_dec
-from args import logger, config_args, test_args
 
 
 def test_download_url(url, duration, window_size, proxies) -> float:
@@ -30,8 +32,8 @@ def test_download_url(url, duration, window_size, proxies) -> float:
                 # Stop downloading after the specified duration
                 if elapsed_time > duration:
                     break
-    except KeyboardInterrupt:
-        exit(1)
+    except KeyboardInterrupt as e:
+        raise e
     except Exception as e:
         logger.warning(f"Error during download: {e}")
         return 0
@@ -61,8 +63,8 @@ def call_speedtest() -> float:
 def test_download_speedtest() -> float:
     try:
         bps = call_speedtest()
-    except KeyboardInterrupt:
-        exit(1)
+    except KeyboardInterrupt as e:
+        raise e
     except BaseException as e:
         logger.warning(f"Error during speedtest: {e}")
         return 0
@@ -111,7 +113,7 @@ def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
     num_success = 0
     try:
         for i, (name, latency) in enumerate(latencies):
-            if not test_args.latency_only:
+            if test_args.test_speed:
                 if num_success >= test_args.max_num:
                     break
                 logger.debug(f"Testing proxy {name}. Latency: {latency}ms\n")
