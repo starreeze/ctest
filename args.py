@@ -21,8 +21,15 @@ class Config:
 class TestArgs:
     speed_test_url: str = field(default="http://speedtest.tele2.net/100MB.zip")
     speed_test_retry: int = field(default=1)
-    latency_test_url: str = field(default="http://www.google.com")
-    latency_test_times: int = field(default=5)
+    latency_test_urls: list[str] = field(
+        default_factory=lambda: [
+            "https://google.com",
+            "https://github.com",
+            "https://chatgpt.com",
+            "https://store.steampowered.com",
+        ]
+    )
+    latency_test_times: int = field(default=1)
     latency_timeout: int = field(default=5000)
     latency_call_timeout: int = field(default=10)
     speedtest_call_timeout: int = field(default=120)

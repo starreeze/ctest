@@ -6,9 +6,9 @@ import requests
 import speedtest
 import yaml
 from func_timeout import func_set_timeout
+from iterwrap import retry_dec
 
 from args import config_args, logger, test_args
-from iterwrap import retry_dec
 
 
 def test_download_url(url, duration, window_size, proxies) -> float:
@@ -84,26 +84,26 @@ def test_speed_single(name: str):
 
 
 @func_set_timeout(test_args.latency_call_timeout)
-def get_latency_once() -> dict[str, int]:
-    url = (
-        config_args.controller_url
-        + f"/group/🔰 节点选择/delay?url={test_args.latency_test_url}&timeout={test_args.latency_timeout}"
-    )
+def get_latency_once(url: str) -> dict[str, int]:
+    url = config_args.controller_url + f"/group/🔰 节点选择/delay?url={url}&timeout={test_args.latency_timeout}"
     return requests.get(url).json()
 
 
 def get_latency(proxies: list[str]) -> dict[str, int]:
     "return valid proxy names and their latency in ms"
     latency = {name: 0 for name in proxies}
-    for i in range(test_args.latency_test_times):
-        logger.info(f"[{i+1}/{test_args.latency_test_times}] Testing latency...")
-        try:
-            new_latency = get_latency_once()
-        except BaseException as e:
-            logger.error(f"Error during latency test: {e}")
-            continue
-        for key, value in latency.items():
-            latency[key] = max(value, new_latency.get(key, test_args.latency_timeout))
+    i, total = 1, test_args.latency_test_times * len(test_args.latency_test_urls)
+    for _ in range(test_args.latency_test_times):
+        for url in test_args.latency_test_urls:
+            logger.info(f"[{i}/{total}] Testing latency...")
+            try:
+                new_latency = get_latency_once(url)
+            except BaseException as e:
+                logger.error(f"Error during latency test: {e}")
+                continue
+            for key, value in latency.items():
+                latency[key] = max(value, new_latency.get(key, test_args.latency_timeout))
+            i += 1
     return {key: value for key, value in latency.items() if value < test_args.latency_timeout}
 
 
