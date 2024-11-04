@@ -15,6 +15,7 @@ class Config:
     )
     controller_url: str = field(default="http://127.0.0.1:9090")
     proxy_url: str = field(default="http://127.0.0.1:7890")
+    discard: bool = field(default=False, metadata={"help": "discard the proxies that are not valid in latency test"})
 
 
 @dataclass

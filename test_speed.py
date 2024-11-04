@@ -98,7 +98,10 @@ def get_latency(proxies: list[str]) -> dict[str, int]:
             logger.info(f"[{i}/{total}] Testing latency...")
             try:
                 new_latency = get_latency_once(url)
-            except BaseException as e:
+            except KeyboardInterrupt:
+                logger.warning("KeyboardInterrupt detected, exiting...")
+                exit(1)
+            except Exception as e:
                 logger.error(f"Error during latency test: {e}")
                 continue
             for key, value in latency.items():
@@ -163,8 +166,12 @@ def main():
     replaced_names = replace_name(proxies, name2ls)
     for new_name, proxy in zip(replaced_names, config["proxies"]):
         proxy["name"] = new_name
+    if config_args.discard:  # filter out latency >= timeout
+        config["proxies"] = filter(lambda x: sl_from_name(x["name"])[1] < test_args.latency_timeout, config["proxies"])
     config["proxies"] = sorted(config["proxies"], key=lambda x: sl_from_name(x["name"]))
 
+    if config_args.discard:
+        replaced_names = filter(lambda x: sl_from_name(x)[1] < test_args.latency_timeout, replaced_names)
     replaced_names = sorted(replaced_names, key=sl_from_name)
     for start, group in zip(test_args.group_proxy_start, config["proxy-groups"]):
         if start == -1:
