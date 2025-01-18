@@ -28,6 +28,7 @@ class TestArgs:
             "https://github.com",
             "https://chatgpt.com",
             "https://store.steampowered.com",
+            # "https://www.youtube.com",
         ]
     )
     latency_test_times: int = field(default=1)

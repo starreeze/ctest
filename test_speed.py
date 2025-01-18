@@ -7,6 +7,7 @@ import speedtest
 import yaml
 from func_timeout import func_set_timeout
 from iterwrap import retry_dec
+import re
 
 from args import config_args, logger, test_args
 
@@ -152,13 +153,25 @@ def sl_from_name(name: str) -> tuple[float, int]:
     return -float(speed), int(latency)
 
 
+def remove_str_tags(yaml_content: str) -> str:
+    """Remove !<str> tags from YAML content and ensure values are properly quoted"""
+    # Pattern matches !<str> or !str followed by a number
+    pattern = r"(!<str>|!str)\s+(\d+)"
+
+    # Replace with the number wrapped in quotes
+    return re.sub(pattern, r'"\2"', yaml_content)
+
+
 def main():
     with open(config_args.profile_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+        yaml_content = f.read()
+    cleaned_content = remove_str_tags(yaml_content)
+    config = yaml.safe_load(cleaned_content)
+
     proxies = [p["name"] for p in config["proxies"]]
 
     valid = get_latency(proxies)
-    logger.info(f"get {len(valid)} valid proxies.")
+    logger.info(f"get {len(valid)} / {len(proxies)} valid proxies.")
     valid = list(sorted(valid.items(), key=lambda x: x[1]))
 
     name2ls = get_speed(valid)
