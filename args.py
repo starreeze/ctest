@@ -9,13 +9,16 @@ from transformers.hf_argparser import HfArgumentParser
 
 @dataclass
 class Config:
-    unsupported_names: list[str] = field(default_factory=lambda: ["cipher: chacha20-poly1305"])
-    profile_path: str = field(
-        default="C:/Users/starreeze/AppData/Roaming/io.github.clash-verge-rev.clash-verge-rev/profiles/RU8K3eg7uUeQ.yaml"
+    unsupported_names: list[str] = field(
+        default_factory=lambda: ["cipher: chacha20-poly1305", "obfs: none", "cipher: ss"]
     )
+    profile_dir: str = field(default="io.github.clash-verge-rev.clash-verge-rev/profiles")
+    profiles: list[str] = field(default_factory=list)
     controller_url: str = field(default="http://127.0.0.1:9090")
     proxy_url: str = field(default="http://127.0.0.1:7890")
-    discard: bool = field(default=False, metadata={"help": "discard the proxies that are not valid in latency test"})
+    discard: bool = field(
+        default=False, metadata={"help": "discard the proxies that are not valid in latency test"}
+    )
 
 
 @dataclass
@@ -42,7 +45,9 @@ class TestArgs:
         metadata={"help": ">0: start position for proxies; -1: no proxy, copy all; -2: load balance"},
     )
     max_num: int = field(default=3, metadata={"help": "the max valid proxies to return in speed test"})
-    load_balance_thres: float = field(default=2.0, metadata={"help": "the min MB/s to be valid for load balancing"})
+    load_balance_thres: float = field(
+        default=2.0, metadata={"help": "the min MB/s to be valid for load balancing"}
+    )
     # latency_only: bool = field(default=False, metadata={"help": "only test latency"})
     test_speed: bool = field(default=False, metadata={"help": "test speed in addition to latency"})
 
@@ -50,6 +55,21 @@ class TestArgs:
 config_args, test_args = HfArgumentParser([Config, TestArgs]).parse_args_into_dataclasses()  # type: ignore
 config_args = cast(Config, config_args)
 test_args = cast(TestArgs, test_args)
+
+if os.name == "nt":
+    base_appdata = os.getenv("APPDATA")
+    if base_appdata is None:
+        raise ValueError("APPDATA is not set")
+else:
+    base_appdata = os.path.expanduser("~/.local/share")
+config_args.profile_dir = os.path.join(base_appdata, config_args.profile_dir)
+config_args.profiles = [
+    os.path.join(config_args.profile_dir, f)
+    for f in os.listdir(config_args.profile_dir)
+    if f.endswith(".yaml")
+    or f.endswith(".yml")
+    and os.path.getsize(os.path.join(config_args.profile_dir, f)) > 10 * 1024
+]
 
 logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]", handlers=[RichHandler()])
 logger = logging.getLogger("rich")

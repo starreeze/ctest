@@ -5,23 +5,31 @@
 
 from __future__ import annotations
 
+import os
+
 from args import config_args as args
 from args import logger
 
 
 def get_unsupported_name(profile: list[str]) -> list[str]:
-    return [line.split(",")[0].split(": ")[-1] for line in profile if any(u in line for u in args.unsupported_names)]
+    return [
+        line.split(",")[0].split(": ")[-1]
+        for line in profile
+        if any(u in line for u in args.unsupported_names)
+    ]
 
 
-def fix():
-    profile = open(args.profile_path, "r", encoding="utf-8").read().strip().splitlines()
+def fix(profile_path: str):
+    logger.info(f"Fixing {profile_path}")
+    profile = open(profile_path, "r", encoding="utf-8").read().strip().splitlines()
     names = get_unsupported_name(profile)
     logger.info(f"Fixing unsupported names: {names}")
     fixed = filter(lambda line: not any(name in line for name in names), profile)
 
-    with open(args.profile_path, "w", encoding="utf-8") as f:
+    with open(profile_path, "w", encoding="utf-8") as f:
         f.write("\n".join(fixed))
 
 
 if __name__ == "__main__":
-    fix()
+    profile_path = max(args.profiles, key=lambda x: os.path.getmtime(x))
+    fix(profile_path)

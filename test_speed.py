@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import os
+import re
 import time
 from typing import Iterable
 
@@ -7,7 +9,6 @@ import speedtest
 import yaml
 from func_timeout import func_set_timeout
 from iterwrap import retry_dec
-import re
 
 from args import config_args, logger, test_args
 
@@ -86,7 +87,9 @@ def test_speed_single(name: str):
 
 @func_set_timeout(test_args.latency_call_timeout)
 def get_latency_once(url: str) -> dict[str, int]:
-    url = config_args.controller_url + f"/group/🔰 节点选择/delay?url={url}&timeout={test_args.latency_timeout}"
+    url = (
+        config_args.controller_url + f"/group/🔰 节点选择/delay?url={url}&timeout={test_args.latency_timeout}"
+    )
     return requests.get(url).json()
 
 
@@ -121,7 +124,9 @@ def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
                 if num_success >= test_args.max_num:
                     break
                 logger.debug(f"Testing proxy {name}. Latency: {latency}ms\n")
-                logger.info(f"Progress: Success - [{num_success}/{test_args.max_num}]; All - [{i+1}/{len(latencies)}]")
+                logger.info(
+                    f"Progress: Success - [{num_success}/{test_args.max_num}]; All - [{i+1}/{len(latencies)}]"
+                )
                 speed = test_speed_single(name)
                 logger.info(f"Speed for {name}: {speed:.2f} MB/s")
                 if speed >= test_args.load_balance_thres:
@@ -163,7 +168,10 @@ def remove_str_tags(yaml_content: str) -> str:
 
 
 def main():
-    with open(config_args.profile_path, "r", encoding="utf-8") as f:
+    # in speedtest mode, use the latest profile
+    profile_path = max(config_args.profiles, key=lambda x: os.path.getmtime(x))
+
+    with open(profile_path, "r", encoding="utf-8") as f:
         yaml_content = f.read()
     cleaned_content = remove_str_tags(yaml_content)
     config = yaml.safe_load(cleaned_content)
@@ -180,7 +188,9 @@ def main():
     for new_name, proxy in zip(replaced_names, config["proxies"]):
         proxy["name"] = new_name
     if config_args.discard:  # filter out latency >= timeout
-        config["proxies"] = filter(lambda x: sl_from_name(x["name"])[1] < test_args.latency_timeout, config["proxies"])
+        config["proxies"] = filter(
+            lambda x: sl_from_name(x["name"])[1] < test_args.latency_timeout, config["proxies"]
+        )
     config["proxies"] = sorted(config["proxies"], key=lambda x: sl_from_name(x["name"]))
 
     if config_args.discard:
@@ -190,12 +200,14 @@ def main():
         if start == -1:
             continue
         if start == -2:
-            names = list(filter(lambda x: float(x.split(" - ")[1]) > test_args.load_balance_thres, replaced_names))
+            names = list(
+                filter(lambda x: float(x.split(" - ")[1]) > test_args.load_balance_thres, replaced_names)
+            )
             group["proxies"] = names if names else [replaced_names[0]]
             continue
         group["proxies"][start:] = replaced_names
 
-    with open(config_args.profile_path, "w", encoding="utf-8") as f:
+    with open(profile_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f, allow_unicode=True, sort_keys=False)
 
 
