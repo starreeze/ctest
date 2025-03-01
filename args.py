@@ -63,13 +63,14 @@ if os.name == "nt":
 else:
     base_appdata = os.path.expanduser("~/.local/share")
 config_args.profile_dir = os.path.join(base_appdata, config_args.profile_dir)
-config_args.profiles = [
-    os.path.join(config_args.profile_dir, f)
-    for f in os.listdir(config_args.profile_dir)
-    if f.endswith(".yaml")
-    or f.endswith(".yml")
-    and os.path.getsize(os.path.join(config_args.profile_dir, f)) > 10 * 1024
-]
+if not config_args.profiles:
+    config_args.profiles = [
+        os.path.join(config_args.profile_dir, f)
+        for f in os.listdir(config_args.profile_dir)
+        if f.endswith(".yaml")
+        or f.endswith(".yml")
+        and os.path.getsize(os.path.join(config_args.profile_dir, f)) > 10 * 1024
+    ]
 
 logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]", handlers=[RichHandler()])
 logger = logging.getLogger("rich")
