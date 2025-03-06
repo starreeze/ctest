@@ -50,6 +50,7 @@ class TestArgs:
     )
     # latency_only: bool = field(default=False, metadata={"help": "only test latency"})
     test_speed: bool = field(default=False, metadata={"help": "test speed in addition to latency"})
+    test_latency_retry: int = field(default=5, metadata={"help": "retry times for latency test"})
 
 
 config_args, test_args = HfArgumentParser([Config, TestArgs]).parse_args_into_dataclasses()  # type: ignore

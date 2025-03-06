@@ -2,7 +2,7 @@
 import os
 import re
 import time
-from typing import Iterable
+from typing import Iterable, cast
 
 import requests
 import speedtest
@@ -70,7 +70,7 @@ def test_download_speedtest() -> float:
     except BaseException as e:
         logger.warning(f"Error during speedtest: {e}")
         return 0
-    MBps = bps / (1024 * 1024 * 8)
+    MBps = cast(float, bps) / (1024 * 1024 * 8)
     return MBps
 
 
@@ -85,6 +85,7 @@ def test_speed_single(name: str):
         return test_download_speedtest()
 
 
+@retry_dec(test_args.test_latency_retry)
 @func_set_timeout(test_args.latency_call_timeout)
 def get_latency_once(url: str) -> dict[str, int]:
     url = (
@@ -101,7 +102,7 @@ def get_latency(proxies: list[str]) -> dict[str, int]:
         for url in test_args.latency_test_urls:
             logger.info(f"[{i}/{total}] Testing latency...")
             try:
-                new_latency = get_latency_once(url)
+                new_latency = cast(dict, get_latency_once(url))
             except KeyboardInterrupt:
                 logger.warning("KeyboardInterrupt detected, exiting...")
                 exit(1)
