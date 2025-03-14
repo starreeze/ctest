@@ -8,7 +8,9 @@ Clash utils for testing speed and fixing unsupported cryptos
 python -m pip install -r requirements.txt
 ```
 
-Then, modify `args.py:Config.profile_path` to your profile path. You can also modify more arguments there.
+Then, modify `args.py:Config.profiles` to your profile path (multiple profiles supported). If you leave it empty, it will automatically use the profiles from clash-verge-rev.
+
+You can also modify more arguments there.
 
 ### Fix unsupported cryptos
 

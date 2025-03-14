@@ -13,6 +13,7 @@ class Config:
         default_factory=lambda: ["cipher: chacha20-poly1305", "obfs: none", "cipher: ss"]
     )
     profile_dir: str = field(default="io.github.clash-verge-rev.clash-verge-rev/profiles")
+    profile_size_filter_kb: int = field(default=10)
     profiles: list[str] = field(default_factory=list)
     controller_url: str = field(default="http://127.0.0.1:9090")
     proxy_url: str = field(default="http://127.0.0.1:7890")
@@ -70,7 +71,8 @@ if not config_args.profiles:
         for f in os.listdir(config_args.profile_dir)
         if f.endswith(".yaml")
         or f.endswith(".yml")
-        and os.path.getsize(os.path.join(config_args.profile_dir, f)) > 10 * 1024
+        and os.path.getsize(os.path.join(config_args.profile_dir, f))
+        > config_args.profile_size_filter_kb * 1024
     ]
 
 logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]", handlers=[RichHandler()])
