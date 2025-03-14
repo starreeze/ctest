@@ -3,8 +3,8 @@ import os
 from dataclasses import dataclass, field
 from typing import cast
 
+from iterwrap import HfArgumentParser
 from rich.logging import RichHandler
-from transformers.hf_argparser import HfArgumentParser
 
 
 @dataclass

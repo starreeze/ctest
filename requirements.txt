@@ -3,4 +3,4 @@ rich
 speedtest-cli
 func_timeout
 PyYAML
-iterwrap
+iterwrap>=0.4
