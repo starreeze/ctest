@@ -1,4 +1,3 @@
-transformers
 rich
 speedtest-cli
 func_timeout
