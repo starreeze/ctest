@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-import os
-import re
+# @Date    : 2025-04-02 10:11:24
+# @Author  : Shangyu.Xing (starreeze@foxmail.com)
+"interface with the clash meta core & speedtest api"
 import time
-from typing import Iterable, cast
+from typing import cast
 
 import requests
 import speedtest
-import yaml
 from func_timeout import func_set_timeout
 from iterwrap import retry_dec
 
-from args import config_args, logger, test_args
+from common.args import config_args, logger, test_args
 
 
 def test_download_url(url, duration, window_size, proxies) -> float:
@@ -143,74 +143,12 @@ def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
     return speed_latency
 
 
-def replace_name(names: Iterable[str], info: dict[str, tuple[float, int]]) -> list[str]:
-    new_names = []
-    for name in names:
-        if name in info:
-            new_names.append(f"{info[name][1]:04d} - {info[name][0]:.2f} - {name.split(' - ')[-1]}")
-        else:
-            new_names.append(f"{test_args.latency_timeout} - 0.00 - {name.split(' - ')[-1]}")
-    return new_names
-    # return sorted(new_names, key=lambda x: int(x.split(" - ")[1]), reverse=True)
-
-
-def sl_from_name(name: str) -> tuple[float, int]:
-    latency, speed = name.split(" - ")[0:2]
-    return -float(speed), int(latency)
-
-
-def remove_str_tags(yaml_content: str) -> str:
-    """Remove !<str> tags from YAML content and ensure values are properly quoted"""
-    # Pattern matches !<str> or !str followed by a number
-    pattern = r"(!<str>|!str)\s+(\d+)"
-
-    # Replace with the number wrapped in quotes
-    return re.sub(pattern, r'"\2"', yaml_content)
-
-
-def main():
-    # in speedtest mode, use the latest profile
-    profile_path = max(config_args.profiles, key=lambda x: os.path.getmtime(x))
-
-    with open(profile_path, "r", encoding="utf-8") as f:
-        yaml_content = f.read()
-    cleaned_content = remove_str_tags(yaml_content)
-    config = yaml.safe_load(cleaned_content)
-
-    proxies = [p["name"] for p in config["proxies"]]
-
-    valid = get_latency(proxies)
-    logger.info(f"get {len(valid)} / {len(proxies)} valid proxies.")
-    valid = list(sorted(valid.items(), key=lambda x: x[1]))
-
-    name2ls = get_speed(valid)
-
-    replaced_names = replace_name(proxies, name2ls)
-    for new_name, proxy in zip(replaced_names, config["proxies"]):
-        proxy["name"] = new_name
-    if config_args.discard:  # filter out latency >= timeout
-        config["proxies"] = filter(
-            lambda x: sl_from_name(x["name"])[1] < test_args.latency_timeout, config["proxies"]
-        )
-    config["proxies"] = sorted(config["proxies"], key=lambda x: sl_from_name(x["name"]))
-
-    if config_args.discard:
-        replaced_names = filter(lambda x: sl_from_name(x)[1] < test_args.latency_timeout, replaced_names)
-    replaced_names = sorted(replaced_names, key=sl_from_name)
-    for start, group in zip(test_args.group_proxy_start, config["proxy-groups"]):
-        if start == -1:
-            continue
-        if start == -2:
-            names = list(
-                filter(lambda x: float(x.split(" - ")[1]) > test_args.load_balance_thres, replaced_names)
-            )
-            group["proxies"] = names if names else [replaced_names[0]]
-            continue
-        group["proxies"][start:] = replaced_names
-
-    with open(profile_path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True, sort_keys=False)
-
-
-if __name__ == "__main__":
-    main()
+@retry_dec(test_args.test_latency_retry)
+@func_set_timeout(test_args.core_restart_timeout)
+def restart_core():
+    "send POST to restart clash meta core"
+    resp = requests.post(config_args.controller_url + "/restart")
+    if resp.status_code != 200:
+        logger.error(f"The response code is not successful when restarting the core: {resp.text}")
+        raise RuntimeError()
+    logger.info("Core restarted.")

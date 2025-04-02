@@ -5,10 +5,8 @@
 
 from __future__ import annotations
 
-import os
-
-from args import config_args as args
-from args import logger
+from common.args import config_args as args
+from common.args import get_newest_profile, logger
 
 
 def get_unsupported_name(profile: list[str]) -> list[str]:
@@ -31,5 +29,4 @@ def fix(profile_path: str):
 
 
 if __name__ == "__main__":
-    profile_path = max(args.profiles, key=lambda x: os.path.getmtime(x))
-    fix(profile_path)
+    fix(get_newest_profile())

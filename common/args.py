@@ -15,10 +15,15 @@ class Config:
     profile_dir: str = field(default="io.github.clash-verge-rev.clash-verge-rev/profiles")
     profile_size_filter_kb: int = field(default=10)
     profiles: list[str] = field(default_factory=list)
+    profile_remote_url_path: str = field(default="urls.txt")
     controller_url: str = field(default="http://127.0.0.1:9090")
     proxy_url: str = field(default="http://127.0.0.1:7890")
     discard: bool = field(
         default=False, metadata={"help": "discard the proxies that are not valid in latency test"}
+    )
+    subconvert_base_url: str = field(default="https://api.dler.io/sub?target=clash")
+    subconvert_config_url: str = field(
+        default="https://raw.githubusercontent.com/starreeze/blogimage/main/subconverter/external.ini"
     )
 
 
@@ -32,13 +37,13 @@ class TestArgs:
             "https://github.com",
             "https://chatgpt.com",
             "https://store.steampowered.com",
-            # "https://www.youtube.com",
         ]
     )
     latency_test_times: int = field(default=1)
-    latency_timeout: int = field(default=5000)
-    latency_call_timeout: int = field(default=10)
+    latency_timeout: int = field(default=10000)
+    latency_call_timeout: int = field(default=60)
     speedtest_call_timeout: int = field(default=120)
+    core_restart_timeout: int = field(default=10)
     speed_duration: int = field(default=15)
     speed_window_size: int = field(default=5)
     group_proxy_start: list[int] = field(
@@ -49,7 +54,9 @@ class TestArgs:
     load_balance_thres: float = field(
         default=2.0, metadata={"help": "the min MB/s to be valid for load balancing"}
     )
-    # latency_only: bool = field(default=False, metadata={"help": "only test latency"})
+    update_profile: bool = field(
+        default=True, metadata={"help": "update profile before running tests in main"}
+    )
     test_speed: bool = field(default=False, metadata={"help": "test speed in addition to latency"})
     test_latency_retry: int = field(default=5, metadata={"help": "retry times for latency test"})
 
@@ -80,3 +87,7 @@ logger = logging.getLogger("rich")
 proxies = {"http": config_args.proxy_url, "https": config_args.proxy_url}
 for name in proxies:
     os.environ[name.lower()] = os.environ[name.upper()] = proxies[name]
+
+
+def get_newest_profile() -> str:
+    return max(config_args.profiles, key=lambda x: os.path.getmtime(x))
