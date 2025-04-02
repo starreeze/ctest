@@ -2,11 +2,11 @@ Clash utils for updating profiles, testing speed and fixing unsupported names
 
 ## Quick Start
 
-## Install ClashVerge
+### Install ClashVerge
 
 Refer to https://github.com/clash-verge-rev/clash-verge-rev. There are lot of tutorials on this software so I may omit it here.
 
-After installation, import remote subscription link [here](#sub-link). You may encounter errors but no need to worry - see the solution below.
+After installation, import remote subscription link (refer to the [sub-link](#sub-link) section). You may encounter errors but no need to worry - see the solution below.
 
 ### Install This CodeBase
 
@@ -60,6 +60,10 @@ GPLv3
 
 ## Sub-link
 
-Here provide an [out-of-the-box subscription link](https://api.dler.io/sub?target=clash&url=https%3A%2F%2Fgitlab.com%2Fcolloq168%2Fnodefiltrate%2F-%2Fraw%2Fmain%2Ffiltrate%3Fref_type%3Dheads%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fripaojiedian%2Ffreenode%2Fmain%2Fsub%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fripaojiedian%2Ffreenode%2Fmain%2Fclash%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fzhangkaiitugithub%2Fpasscro%2Fmain%2Fspeednodes.yaml%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Ffreefq%2Ffree%2Fmaster%2Fv2%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fanaer%2FSub%2Fmain%2Fclash.yaml%7Chttps%3A%2F%2Fraw.githubusercontent.com%2FHuibq%2FTrojanLinks%2Fmaster%2Flinks%2Fvmess%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fqjlxg%2Fhy2%2Fmain%2Fsplitted%2Fhy2%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Faiboboxx%2Fv2rayfree%2Fmain%2Fv2&config=https%3A%2F%2Fraw.githubusercontent.com%2Fstarreeze%2Fblogimage%2Fmain%2Fsubconverter%2Fexternal.ini&emoji=true) for clash (note that this may not be up-to-date).
+Here provide an out-of-the-box subscription link for clash (note that this may not be up-to-date).
+
+```
+https://api.dler.io/sub?target=clash&url=https%3A%2F%2Fgitlab.com%2Fcolloq168%2Fnodefiltrate%2F-%2Fraw%2Fmain%2Ffiltrate%3Fref_type%3Dheads%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fripaojiedian%2Ffreenode%2Fmain%2Fsub%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fripaojiedian%2Ffreenode%2Fmain%2Fclash%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fzhangkaiitugithub%2Fpasscro%2Fmain%2Fspeednodes.yaml%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Ffreefq%2Ffree%2Fmaster%2Fv2%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fanaer%2FSub%2Fmain%2Fclash.yaml%7Chttps%3A%2F%2Fraw.githubusercontent.com%2FHuibq%2FTrojanLinks%2Fmaster%2Flinks%2Fvmess%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Fqjlxg%2Fhy2%2Fmain%2Fsplitted%2Fhy2%7Chttps%3A%2F%2Fraw.githubusercontent.com%2Faiboboxx%2Fv2rayfree%2Fmain%2Fv2&config=https%3A%2F%2Fraw.githubusercontent.com%2Fstarreeze%2Fblogimage%2Fmain%2Fsubconverter%2Fexternal.ini&emoji=true
+```
 
 It consists of the following [free link collections](urls.txt) and my custom config file. You can quote the urls and combine them manually to form the above subscription link.
