@@ -24,24 +24,10 @@ def sl_from_name(name: str) -> tuple[float, int]:
     return -float(speed), int(latency)
 
 
-def remove_str_tags(yaml_content: str) -> str:
-    """Remove !<str> tags from YAML content and ensure values are properly quoted"""
-    # Pattern matches !<str> or !str followed by a number
-    pattern = r"(!<str>|!str)\s+(\d+)"
-
-    # Replace with the number wrapped in quotes
-    return re.sub(pattern, r'"\2"', yaml_content)
-
-
 def test_latency_speed():
     # in speedtest mode, use the latest profile
     profile_path = get_newest_profile()
-
-    with open(profile_path, "r", encoding="utf-8") as f:
-        yaml_content = f.read()
-    cleaned_content = remove_str_tags(yaml_content)
-    config = yaml.safe_load(cleaned_content)
-
+    config = yaml.safe_load(open(profile_path, "r", encoding="utf-8"))
     proxies = [p["name"] for p in config["proxies"]]
 
     valid = get_latency(proxies)
