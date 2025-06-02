@@ -13,8 +13,8 @@ def main():
     if test_args.update_profile:
         update()
         fix(get_newest_profile())
-    # restart_core()
-    input("Please reactivate profile manually and press ENTER to run latency test ...")
+        # restart_core()
+        input("Please reactivate profile manually and press ENTER to run latency test ...")
     test_latency_speed()
 
 
