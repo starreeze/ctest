@@ -59,9 +59,13 @@ def fix(profile_path: str):
     logger.info(f"Fixing unsupported names: {unsupported_names}")
     redundant_names = filter_redundant_names(profile)
     logger.info(f"Fixing redundant names: {redundant_names}")
+
+    name_patterns = [
+        re.compile(rf'(:|-)\s*"?{re.escape(name)}"?(,|$)')
+        for name in set(unsupported_names + redundant_names)
+    ]
     fixed = filter(
-        lambda line: not any(name in line for name in unsupported_names + redundant_names),
-        profile.splitlines(),
+        lambda line: all(pattern.search(line) is None for pattern in name_patterns), profile.splitlines()
     )
 
     with open(profile_path, "w", encoding="utf-8") as f:

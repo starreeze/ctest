@@ -2,7 +2,6 @@
 # @Date    : 2025-04-01 10:35:05
 # @Author  : Shangyu.Xing (starreeze@foxmail.com)
 
-from common.api import restart_core
 from common.args import get_newest_profile, test_args
 from function.fix import fix
 from function.speed import test_latency_speed

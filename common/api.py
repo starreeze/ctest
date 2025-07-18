@@ -75,7 +75,7 @@ def test_download_speedtest() -> float:
 
 
 def test_speed_single(name: str):
-    url = config_args.controller_url + f"/proxies/🔰 节点选择"
+    url = config_args.controller_url + "/proxies/🔰 节点选择"
     response = requests.put(url, json={"name": name})
     if response.status_code // 100 != 2 or response.text:
         logger.error(f"Failed to set proxy {name}: {response.text}")

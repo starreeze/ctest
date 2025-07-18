@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import re
 from typing import Iterable
 
 import yaml
@@ -24,10 +23,22 @@ def sl_from_name(name: str) -> tuple[float, int]:
     return -float(speed), int(latency)
 
 
+def convert_to_str(config: dict) -> dict:
+    for proxy in config["proxies"]:
+        if not isinstance(proxy["name"], str):
+            proxy["name"] = str(proxy["name"])
+    for group in config["proxy-groups"]:
+        for i in range(len(group["proxies"])):
+            if not isinstance(group["proxies"][i], str):
+                group["proxies"][i] = str(group["proxies"][i])
+    return config
+
+
 def test_latency_speed():
     # in speedtest mode, use the latest profile
     profile_path = get_newest_profile()
     config = yaml.safe_load(open(profile_path, "r", encoding="utf-8"))
+    config = convert_to_str(config)
     proxies = [p["name"] for p in config["proxies"]]
 
     valid = get_latency(proxies)
