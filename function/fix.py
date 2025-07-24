@@ -18,6 +18,11 @@ from common.args import get_newest_profile, logger
 def preprocess_profile(profile: str) -> str:
     profile = profile.replace("!<str>", "!!str")
     profile = quote_ipv6_server_addresses(profile)
+    in_yaml = yaml.safe_load(profile)
+    for proxy in in_yaml["proxies"]:
+        if "obfs" in proxy and "obfs-password" not in proxy:
+            proxy["obfs-password"] = ""
+    profile = yaml.dump(in_yaml, allow_unicode=True)
     return profile
 
 
