@@ -13,6 +13,7 @@ import yaml
 
 from common.args import config_args as args
 from common.args import get_newest_profile, logger
+from common.utils import dump_yaml
 
 
 def preprocess_profile(profile: str) -> str:
@@ -21,8 +22,8 @@ def preprocess_profile(profile: str) -> str:
     in_yaml = yaml.safe_load(profile)
     for proxy in in_yaml["proxies"]:
         if "obfs" in proxy and "obfs-password" not in proxy:
-            proxy["obfs-password"] = ""
-    profile = yaml.dump(in_yaml, allow_unicode=True)
+            proxy["obfs-password"] = "none"
+    profile = dump_yaml(in_yaml)
     return profile
 
 

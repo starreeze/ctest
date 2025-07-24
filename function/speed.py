@@ -5,6 +5,7 @@ import yaml
 
 from common.api import get_latency, get_speed
 from common.args import config_args, get_newest_profile, logger, test_args
+from common.utils import dump_yaml
 
 
 def replace_name(names: Iterable[str], info: dict[str, tuple[float, int]]) -> list[str]:
@@ -71,7 +72,7 @@ def test_latency_speed():
         group["proxies"][start:] = replaced_names
 
     with open(profile_path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True, sort_keys=False)
+        f.write(dump_yaml(config))
 
 
 if __name__ == "__main__":
