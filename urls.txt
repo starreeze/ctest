@@ -1,9 +1,8 @@
-https://gitlab.com/colloq168/nodefiltrate/-/raw/main/filtrate?ref_type=heads
+https://raw.githubusercontent.com/starreeze/ctest/main/assets/nodefiltrate.yaml
 https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub
 https://raw.githubusercontent.com/ripaojiedian/freenode/main/clash
 https://raw.githubusercontent.com/zhangkaiitugithub/passcro/main/speednodes.yaml
 https://raw.githubusercontent.com/freefq/free/master/v2
 https://raw.githubusercontent.com/anaer/Sub/main/clash.yaml
 https://raw.githubusercontent.com/Huibq/TrojanLinks/master/links/vmess
-https://raw.githubusercontent.com/qjlxg/hy2/main/splitted/hy2
 https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2
