@@ -12,7 +12,7 @@ from common.args import get_newest_profile, logger
 
 def update():
     with open(args.profile_remote_url_path, encoding="utf-8") as f:
-        urls = [line.strip() for line in f if line.strip()]
+        urls = [line.strip() for line in f if line.strip() if not line.strip().startswith("#")]
     encoded_urls = [urllib.parse.quote(url, safe="") for url in urls]
     merged_urls = "|".join(encoded_urls)
     config_url = urllib.parse.quote(args.subconvert_config_url, safe="")
