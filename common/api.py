@@ -12,6 +12,20 @@ from iterwrap import retry_dec
 
 from common.args import config_args, logger, test_args
 
+header = {"Authorization": f"Bearer {config_args.controller_password}"}
+
+
+def get(*args, **kwargs):
+    return requests.get(*args, **kwargs, headers=header)
+
+
+def put(*args, **kwargs):
+    return requests.put(*args, **kwargs, headers=header)
+
+
+def post(*args, **kwargs):
+    return requests.post(*args, **kwargs, headers=header)
+
 
 def test_download_url(url, duration, window_size, proxies) -> float:
     start_time = time.time()
@@ -76,7 +90,7 @@ def test_download_speedtest() -> float:
 
 def test_speed_single(name: str):
     url = config_args.controller_url + "/proxies/🔰 节点选择"
-    response = requests.put(url, json={"name": name})
+    response = put(url, json={"name": name})
     if response.status_code // 100 != 2 or response.text:
         logger.error(f"Failed to set proxy {name}: {response.text}")
         return 0.0
@@ -87,32 +101,39 @@ def test_speed_single(name: str):
 
 @retry_dec(test_args.test_latency_retry)
 @func_set_timeout(test_args.latency_call_timeout)
-def get_latency_once(url: str) -> dict[str, int]:
+def get_latency_once(url: str, group_name: str = "🔰 节点选择") -> dict[str, int]:
     url = (
-        config_args.controller_url + f"/group/🔰 节点选择/delay?url={url}&timeout={test_args.latency_timeout}"
+        config_args.controller_url
+        + f"/group/{group_name}/delay?url={url}&timeout={test_args.latency_timeout}"
     )
-    return requests.get(url).json()
+    return get(url).json()
 
 
-def get_latency(proxies: list[str]) -> dict[str, int]:
+def get_latency(proxies: list[str], group_name: str) -> dict[str, int]:
     "return valid proxy names and their latency in ms"
     latency = {name: 0 for name in proxies}
     i, total = 1, test_args.latency_test_times * len(test_args.latency_test_urls)
     for _ in range(test_args.latency_test_times):
         for url in test_args.latency_test_urls:
-            logger.info(f"[{i}/{total}] Testing latency...")
+            logger.info(f"[{i}/{total}] Testing latency for group '{group_name}'...")
             try:
-                new_latency = cast(dict, get_latency_once(url))
+                new_latency = cast(dict, get_latency_once(url, group_name))
             except KeyboardInterrupt:
                 logger.warning("KeyboardInterrupt detected, exiting...")
                 exit(1)
             except Exception as e:
                 logger.error(f"Error during latency test: {e}")
                 continue
+            if "timeout" in new_latency.get("message", ""):
+                logger.info(f"[{i}/{total}] valid_count=0")
+                i += 1
+                continue
+            valid_count = sum(1 if value < test_args.latency_timeout else 0 for value in new_latency.values())
+            logger.info(f"[{i}/{total}] {valid_count=}")
             for key, value in latency.items():
                 latency[key] = max(value, new_latency.get(key, test_args.latency_timeout))
             i += 1
-    return {key: value for key, value in latency.items() if value < test_args.latency_timeout}
+    return {key: value for key, value in latency.items() if 0 < value < test_args.latency_timeout}
 
 
 def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
@@ -147,7 +168,7 @@ def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
 @func_set_timeout(test_args.core_restart_timeout)
 def restart_core():
     "send POST to restart clash meta core"
-    resp = requests.post(config_args.controller_url + "/restart")
+    resp = post(config_args.controller_url + "/restart")
     if resp.status_code != 200:
         logger.error(f"The response code is not successful when restarting the core: {resp.text}")
         raise RuntimeError()

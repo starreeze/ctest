@@ -5,6 +5,7 @@ import yaml
 
 from common.api import get_latency, get_speed
 from common.args import config_args, get_newest_profile, logger, test_args
+from common.db import ProxyFailureDB
 from common.utils import dump_yaml
 
 
@@ -42,9 +43,44 @@ def test_latency_speed():
     config = convert_to_str(config)
     proxies = [p["name"] for p in config["proxies"]]
 
-    valid = get_latency(proxies)
-    logger.info(f"get {len(valid)} / {len(proxies)} valid proxies.")
-    valid = list(sorted(valid.items(), key=lambda x: x[1]))
+    # Find all "节点选择" groups (created by fix.py)
+    selection_groups = [
+        group for group in config.get("proxy-groups", []) if group["name"].startswith("🔰 节点选择 Group")
+    ]
+
+    if not selection_groups:
+        raise ValueError("No '🔰 节点选择' groups found")
+
+    logger.info(f"Found {len(selection_groups)} proxy selection group(s) to test")
+
+    # Test each group separately and merge results
+    all_valid = {}
+    for i, group in enumerate(selection_groups, 1):
+        group_name = group["name"]
+        proxy_group = group.get("proxies", [])
+        logger.info(
+            f"Testing group {i}/{len(selection_groups)}: {group_name} with {len(proxy_group)} proxies"
+        )
+        valid = get_latency(proxy_group, group_name)
+        logger.info(f"Group {i}/{len(selection_groups)}: got {len(valid)} / {len(proxy_group)} valid proxies")
+        all_valid.update(valid)
+
+    logger.info(f"Total: got {len(all_valid)} / {len(proxies)} valid proxies across all groups.")
+    valid = list(sorted(all_valid.items(), key=lambda x: x[1]))
+
+    # Update failure database
+    failure_db = ProxyFailureDB()
+    for proxy_dict in config["proxies"]:
+        proxy_name = proxy_dict["name"]
+        server = proxy_dict["server"]
+        port = proxy_dict["port"]
+
+        # Check if this proxy failed (not in valid results)
+        if proxy_name not in all_valid:
+            failure_db.record_failure(server, port)
+            logger.debug(f"Recorded failure for {proxy_name} ({server}:{port})")
+
+    failure_db.save()
 
     name2ls = get_speed(valid)
 
@@ -60,16 +96,22 @@ def test_latency_speed():
     if config_args.discard:
         replaced_names = filter(lambda x: sl_from_name(x)[1] < test_args.latency_timeout, replaced_names)
     replaced_names = sorted(replaced_names, key=sl_from_name)
+    new_groups = []
     for start, group in zip(test_args.group_proxy_start, config["proxy-groups"]):
         if start == -1:
+            new_groups.append(group)
             continue
         if start == -2:
             names = list(
                 filter(lambda x: float(x.split(" - ")[1]) > test_args.load_balance_thres, replaced_names)
             )
             group["proxies"] = names if names else [replaced_names[0]]
+            new_groups.append(group)
             continue
         group["proxies"][start:] = replaced_names
+        new_groups.append(group)
+
+    config["proxy-groups"] = new_groups
 
     with open(profile_path, "w", encoding="utf-8") as f:
         f.write(dump_yaml(config))
