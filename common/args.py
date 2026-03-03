@@ -27,6 +27,7 @@ class Config:
     subconvert_config_url: str = field(
         default="https://raw.githubusercontent.com/starreeze/blogimage/main/subconverter/external.ini"
     )
+    target_group: str = field(default="🔰 节点选择")
     max_proxies_per_group: int = field(
         default=100, metadata={"help": "maximum proxies per test group for splitting large groups"}
     )
@@ -38,6 +39,12 @@ class Config:
     )
     failure_filter_duration_days: int = field(
         default=30, metadata={"help": "days to filter out failed proxies"}
+    )
+    failure_dedup_hours: int = field(
+        default=24, metadata={"help": "hours within which multiple failures count as one"}
+    )
+    min_speed_threshold_kbps: int = field(
+        default=512, metadata={"help": "minimum speed in KB/s, below which is considered a failure"}
     )
 
 

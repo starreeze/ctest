@@ -29,84 +29,132 @@ class ProxyFailureDB:
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
 
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS proxy_failures (
-                        server TEXT NOT NULL,
-                        port INTEGER NOT NULL,
-                        consecutive_failures INTEGER DEFAULT 0,
-                        last_failure_time REAL DEFAULT 0,
-                        PRIMARY KEY (server, port)
-                    )
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS proxy_failures (
+                    server TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    consecutive_failures INTEGER DEFAULT 0,
+                    first_failure_time REAL DEFAULT 0,
+                    last_failure_time REAL DEFAULT 0,
+                    PRIMARY KEY (server, port)
                 )
-                conn.commit()
-            logger.debug(f"Initialized failure database at {self.db_path}")
-        except Exception as e:
-            logger.error(f"Failed to initialize failure database: {e}")
-            raise
+            """
+            )
+            # Migration: add first_failure_time column if it doesn't exist
+            cursor.execute("PRAGMA table_info(proxy_failures)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "first_failure_time" not in columns:
+                cursor.execute("ALTER TABLE proxy_failures ADD COLUMN first_failure_time REAL DEFAULT 0")
+                # Initialize first_failure_time from last_failure_time for existing records
+                cursor.execute(
+                    "UPDATE proxy_failures SET first_failure_time = last_failure_time WHERE first_failure_time = 0"
+                )
+            conn.commit()
+        logger.debug(f"Initialized failure database at {self.db_path}")
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection"""
         return sqlite3.connect(self.db_path)
 
-    def record_failure(self, server: str, port: int) -> None:
+    def record_failures_batch(self, proxies: list[tuple[str, int]]) -> None:
         """
-        Record a failure for a proxy. Increments consecutive failure count.
+        Record failures for multiple proxies in a single transaction.
+        Much more efficient than calling record_failure() for each proxy.
 
         Args:
-            server: Proxy server address
-            port: Proxy port
+            proxies: List of (server, port) tuples
         """
+        if not proxies:
+            return
+
         current_time = time.time()
+        dedup_window_seconds = config_args.failure_dedup_hours * 3600
 
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                # Use UPSERT (INSERT OR REPLACE with increment)
-                cursor.execute(
-                    """
-                    INSERT INTO proxy_failures (server, port, consecutive_failures, last_failure_time)
-                    VALUES (?, ?, 1, ?)
-                    ON CONFLICT(server, port) DO UPDATE SET
-                        consecutive_failures = consecutive_failures + 1,
-                        last_failure_time = ?
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Get all existing records in one query
+            placeholders = ",".join(["(?, ?)"] * len(proxies))
+            flat_params = [item for proxy in proxies for item in proxy]
+            cursor.execute(
+                f"""
+                SELECT server, port, consecutive_failures, first_failure_time
+                FROM proxy_failures
+                WHERE (server, port) IN (VALUES {placeholders})
                 """,
-                    (server, port, current_time, current_time),
-                )
-                conn.commit()
+                flat_params,
+            )
+            existing = {(row[0], row[1]): (row[2], row[3]) for row in cursor.fetchall()}
 
-                # Get the new failure count for logging
-                cursor.execute(
-                    "SELECT consecutive_failures FROM proxy_failures WHERE server = ? AND port = ?",
-                    (server, port),
-                )
-                result = cursor.fetchone()
-                if result:
-                    logger.debug(f"Recorded failure for {server}:{port}: {result[0]} consecutive failures")
-        except Exception as e:
-            logger.error(f"Failed to record failure for {server}:{port}: {e}")
+            # Prepare batch operations
+            updates_with_count = []  # (new_count, current_time, server, port)
+            updates_time_only = []  # (current_time, server, port)
+            inserts = []  # (server, port, 1, current_time, current_time)
 
-    def record_success(self, server: str, port: int) -> None:
+            for server, port in proxies:
+                if (server, port) in existing:
+                    consecutive_failures, first_failure_time = existing[(server, port)]
+                    time_since_first = current_time - first_failure_time
+                    current_segment = int(time_since_first // dedup_window_seconds)
+                    new_count = current_segment + 1
+
+                    if new_count > consecutive_failures:
+                        updates_with_count.append((new_count, current_time, server, port))
+                        logger.debug(
+                            f"Failure for {server}:{port} in segment {current_segment}, count updated to {new_count}"
+                        )
+                    else:
+                        updates_time_only.append((current_time, server, port))
+                        logger.debug(
+                            f"Failure for {server}:{port} in segment {current_segment}, count unchanged ({consecutive_failures})"
+                        )
+                else:
+                    inserts.append((server, port, 1, current_time, current_time))
+                    logger.debug(f"First failure for {server}:{port}, count = 1")
+
+            # Execute batch operations
+            if updates_with_count:
+                cursor.executemany(
+                    "UPDATE proxy_failures SET consecutive_failures = ?, last_failure_time = ? WHERE server = ? AND port = ?",
+                    updates_with_count,
+                )
+            if updates_time_only:
+                cursor.executemany(
+                    "UPDATE proxy_failures SET last_failure_time = ? WHERE server = ? AND port = ?",
+                    updates_time_only,
+                )
+            if inserts:
+                cursor.executemany(
+                    "INSERT INTO proxy_failures (server, port, consecutive_failures, first_failure_time, last_failure_time) VALUES (?, ?, ?, ?, ?)",
+                    inserts,
+                )
+
+            conn.commit()
+            logger.info(
+                f"Batch recorded {len(proxies)} failures: {len(inserts)} new, {len(updates_with_count)} count updates, {len(updates_time_only)} time-only updates"
+            )
+
+    def record_successes_batch(self, proxies: list[tuple[str, int]]) -> None:
         """
-        Record a success for a proxy. Resets consecutive failure count by removing entry.
+        Record successes for multiple proxies in a single transaction.
+        Removes all specified entries from the failure database.
 
         Args:
-            server: Proxy server address
-            port: Proxy port
+            proxies: List of (server, port) tuples
         """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM proxy_failures WHERE server = ? AND port = ?", (server, port))
-                if cursor.rowcount > 0:
-                    logger.debug(f"Reset failure count for {server}:{port}")
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Failed to record success for {server}:{port}: {e}")
+        if not proxies:
+            return
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.executemany("DELETE FROM proxy_failures WHERE server = ? AND port = ?", proxies)
+            deleted = cursor.rowcount
+            conn.commit()
+            if deleted > 0:
+                logger.info(f"Batch reset failure count for {deleted} proxies")
 
     def should_filter(self, server: str, port: int) -> bool:
         """
@@ -123,40 +171,36 @@ class ProxyFailureDB:
         Returns:
             True if proxy should be filtered, False otherwise
         """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT consecutive_failures, last_failure_time FROM proxy_failures WHERE server = ? AND port = ?",
-                    (server, port),
-                )
-                result = cursor.fetchone()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT consecutive_failures, last_failure_time FROM proxy_failures WHERE server = ? AND port = ?",
+                (server, port),
+            )
+            result = cursor.fetchone()
 
-                if not result:
-                    return False
+            if not result:
+                return False
 
-                consecutive_failures, last_failure_time = result
+            consecutive_failures, last_failure_time = result
 
-                # Check if we've reached the failure threshold
-                if consecutive_failures < config_args.consecutive_failure_threshold:
-                    return False
+            # Check if we've reached the failure threshold
+            if consecutive_failures < config_args.consecutive_failure_threshold:
+                return False
 
-                # Check if the failure is still within the filter duration
-                current_time = time.time()
-                duration_seconds = config_args.failure_filter_duration_days * 24 * 3600
-                time_since_failure = current_time - last_failure_time
+            # Check if the failure is still within the filter duration
+            current_time = time.time()
+            duration_seconds = config_args.failure_filter_duration_days * 24 * 3600
+            time_since_failure = current_time - last_failure_time
 
-                if time_since_failure > duration_seconds:
-                    # Filter period has expired, remove from database
-                    logger.debug(f"Filter period expired for {server}:{port}, removing from database")
-                    cursor.execute("DELETE FROM proxy_failures WHERE server = ? AND port = ?", (server, port))
-                    conn.commit()
-                    return False
+            if time_since_failure > duration_seconds:
+                # Filter period has expired, remove from database
+                logger.debug(f"Filter period expired for {server}:{port}, removing from database")
+                cursor.execute("DELETE FROM proxy_failures WHERE server = ? AND port = ?", (server, port))
+                conn.commit()
+                return False
 
-                return True
-        except Exception as e:
-            logger.error(f"Failed to check filter status for {server}:{port}: {e}")
-            return False
+            return True
 
     def get_filtered_proxies(self) -> Set[str]:
         """
@@ -169,43 +213,39 @@ class ProxyFailureDB:
         current_time = time.time()
         duration_seconds = config_args.failure_filter_duration_days * 24 * 3600
 
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
 
-                # Get all entries that meet the filter criteria
-                cursor.execute(
-                    """
-                    SELECT server, port, last_failure_time FROM proxy_failures
-                    WHERE consecutive_failures >= ?
-                """,
-                    (config_args.consecutive_failure_threshold,),
+            # Get all entries that meet the filter criteria
+            cursor.execute(
+                """
+                SELECT server, port, last_failure_time FROM proxy_failures
+                WHERE consecutive_failures >= ?
+            """,
+                (config_args.consecutive_failure_threshold,),
+            )
+
+            rows = cursor.fetchall()
+            expired_entries = []
+
+            for server, port, last_failure_time in rows:
+                time_since_failure = current_time - last_failure_time
+
+                if time_since_failure > duration_seconds:
+                    # Filter period has expired
+                    expired_entries.append((server, port))
+                else:
+                    filtered.add(f"{server}:{port}")
+
+            # Clean up expired entries
+            if expired_entries:
+                cursor.executemany(
+                    "DELETE FROM proxy_failures WHERE server = ? AND port = ?", expired_entries
                 )
-
-                rows = cursor.fetchall()
-                expired_entries = []
-
-                for server, port, last_failure_time in rows:
-                    time_since_failure = current_time - last_failure_time
-
-                    if time_since_failure > duration_seconds:
-                        # Filter period has expired
-                        expired_entries.append((server, port))
-                    else:
-                        filtered.add(f"{server}:{port}")
-
-                # Clean up expired entries
-                if expired_entries:
-                    cursor.executemany(
-                        "DELETE FROM proxy_failures WHERE server = ? AND port = ?", expired_entries
-                    )
-                    conn.commit()
-                    logger.debug(
-                        f"Cleaned up {len(expired_entries)} expired entries while getting filtered proxies"
-                    )
-
-        except Exception as e:
-            logger.error(f"Failed to get filtered proxies: {e}")
+                conn.commit()
+                logger.debug(
+                    f"Cleaned up {len(expired_entries)} expired entries while getting filtered proxies"
+                )
 
         return filtered
 
@@ -220,18 +260,14 @@ class ProxyFailureDB:
         Returns:
             Number of consecutive failures, or 0 if not in database
         """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT consecutive_failures FROM proxy_failures WHERE server = ? AND port = ?",
-                    (server, port),
-                )
-                result = cursor.fetchone()
-                return result[0] if result else 0
-        except Exception as e:
-            logger.error(f"Failed to get failure count for {server}:{port}: {e}")
-            return 0
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT consecutive_failures FROM proxy_failures WHERE server = ? AND port = ?",
+                (server, port),
+            )
+            result = cursor.fetchone()
+            return result[0] if result else 0
 
     def cleanup_expired(self) -> None:
         """Remove expired entries from the database"""
@@ -239,30 +275,11 @@ class ProxyFailureDB:
         duration_seconds = config_args.failure_filter_duration_days * 24 * 3600
         cutoff_time = current_time - duration_seconds
 
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM proxy_failures WHERE last_failure_time < ?", (cutoff_time,))
-                deleted_count = cursor.rowcount
-                conn.commit()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM proxy_failures WHERE last_failure_time < ?", (cutoff_time,))
+            deleted_count = cursor.rowcount
+            conn.commit()
 
-                if deleted_count > 0:
-                    logger.info(f"Cleaned up {deleted_count} expired entries from failure database")
-        except Exception as e:
-            logger.error(f"Failed to cleanup expired entries: {e}")
-
-    def save(self) -> None:
-        """
-        Compatibility method - SQLite auto-saves on commit.
-        This method exists for API compatibility with the old JSON-based implementation.
-        """
-        # SQLite automatically saves data on commit, so this is a no-op
-        logger.debug("Save called (SQLite auto-commits, no action needed)")
-
-    def load(self) -> None:
-        """
-        Compatibility method - SQLite loads data on demand.
-        This method exists for API compatibility with the old JSON-based implementation.
-        """
-        # SQLite loads data on demand, so this is a no-op
-        logger.debug("Load called (SQLite loads on demand, no action needed)")
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} expired entries from failure database")

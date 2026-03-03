@@ -16,3 +16,12 @@ https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/clashmeta.yaml
 https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/ndnode.yaml
 # https://raw.githubusercontent.com/freefq/free/master/v2
 # https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2
+
+https://raw.githubusercontent.com/Jsnzkpg/Jsnzkpg/Jsnzkpg/Jsnzkpg
+# https://raw.githubusercontent.com/free-nodes/clashfree/refs/heads/main/clash%Y%m%d.yml
+https://mm.mibei77.com/%Y/%m.%dClasholr.yaml
+# http://stairnode.cczzuu.top/node/%Y%m%d-clash.yaml
+# https://iwxf.netlify.app/
+# https://jiang.netlify.app/
+# https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.yml
+# https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/EternityAir.yml

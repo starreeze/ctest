@@ -3,6 +3,7 @@
 # @Author  : Shangyu.Xing (starreeze@foxmail.com)
 
 import urllib.parse
+from datetime import datetime
 
 import requests
 
@@ -11,8 +12,13 @@ from common.args import get_newest_profile, logger
 
 
 def update():
+    urls = []
     with open(args.profile_remote_url_path, encoding="utf-8") as f:
-        urls = [line.strip() for line in f if line.strip() if not line.strip().startswith("#")]
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                line = datetime.strftime(datetime.now(), line)
+                urls.append(line)
     encoded_urls = [urllib.parse.quote(url, safe="") for url in urls]
     merged_urls = "|".join(encoded_urls)
     config_url = urllib.parse.quote(args.subconvert_config_url, safe="")

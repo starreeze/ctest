@@ -45,11 +45,13 @@ def test_latency_speed():
 
     # Find all "节点选择" groups (created by fix.py)
     selection_groups = [
-        group for group in config.get("proxy-groups", []) if group["name"].startswith("🔰 节点选择 Group")
+        group
+        for group in config.get("proxy-groups", [])
+        if group["name"].startswith(f"{config_args.target_group} Group")
     ]
 
     if not selection_groups:
-        raise ValueError("No '🔰 节点选择' groups found")
+        raise ValueError(f"No '{config_args.target_group}' groups found")
 
     logger.info(f"Found {len(selection_groups)} proxy selection group(s) to test")
 
@@ -68,8 +70,9 @@ def test_latency_speed():
     logger.info(f"Total: got {len(all_valid)} / {len(proxies)} valid proxies across all groups.")
     valid = list(sorted(all_valid.items(), key=lambda x: x[1]))
 
-    # Update failure database
+    # Update failure database - collect all failures first, then batch update
     failure_db = ProxyFailureDB()
+    failed_proxies = []
     for proxy_dict in config["proxies"]:
         proxy_name = proxy_dict["name"]
         server = proxy_dict["server"]
@@ -77,12 +80,34 @@ def test_latency_speed():
 
         # Check if this proxy failed (not in valid results)
         if proxy_name not in all_valid:
-            failure_db.record_failure(server, port)
-            logger.debug(f"Recorded failure for {proxy_name} ({server}:{port})")
+            failed_proxies.append((server, port))
+            logger.debug(f"Will record failure for {proxy_name} ({server}:{port})")
 
-    failure_db.save()
+    # Batch record all failures at once
+    if failed_proxies:
+        failure_db.record_failures_batch(failed_proxies)
 
     name2ls = get_speed(valid)
+
+    # Record failures for proxies with speed lower than the threshold
+    # This is treated the same as a failed latency test
+    speed_threshold_mbps = config_args.min_speed_threshold_kbps / 1024  # Convert KB/s to MB/s
+    name_to_proxy = {proxy["name"]: proxy for proxy in config["proxies"]}
+    low_speed_failures = []
+    for proxy_name, (speed, latency) in name2ls.items():
+        if speed < speed_threshold_mbps:
+            if proxy_name in name_to_proxy:
+                proxy_dict = name_to_proxy[proxy_name]
+                server = proxy_dict["server"]
+                port = proxy_dict["port"]
+                low_speed_failures.append((server, port))
+                logger.debug(
+                    f"Will record failure for {proxy_name} ({server}:{port}) due to low speed: {speed:.2f} MB/s"
+                )
+
+    # Batch record all low-speed failures at once
+    if low_speed_failures and test_args.test_speed:
+        failure_db.record_failures_batch(low_speed_failures)
 
     replaced_names = replace_name(proxies, name2ls)
     for new_name, proxy in zip(replaced_names, config["proxies"]):

@@ -27,16 +27,11 @@ def create_proxy_groups(proxy_names: list[str], max_size: int) -> list[dict]:
     Returns:
         List of proxy group dictionaries for clash config
     """
-    if not proxy_names or len(proxy_names) <= max_size:
-        # If proxies fit in one group, return a single group
-        return [{"name": "🔰 节点选择", "type": "select", "proxies": proxy_names}]
-
-    # Split into multiple groups
     groups = []
     for i in range(0, len(proxy_names), max_size):
         group_proxies = proxy_names[i : i + max_size]
         group_num = i // max_size + 1
-        group_name = f"🔰 节点选择 Group {group_num}"
+        group_name = f"{args.target_group} Group {group_num}"
         groups.append({"name": group_name, "type": "select", "proxies": group_proxies})
 
     logger.info(f"Created {len(groups)} proxy groups with max {max_size} proxies each")
@@ -263,12 +258,7 @@ def fix(profile_path: str):
     fixed_proxies, server_port_to_name = handle_redundant_and_conflicts(supported_proxies)
     redundant_count = initial_count - len(fixed_proxies)
 
-    # Count renamed proxies
-    renamed_count = sum(1 for sp, name in server_port_to_name.items() if "#" in name)
-
     logger.info(f"Removed {redundant_count} redundant proxies")
-    if renamed_count:
-        logger.info(f"Renamed {renamed_count} conflicting proxies")
     logger.info(f"Final proxy count: {len(fixed_proxies)}")
 
     # Step 3: Update all references throughout the profile

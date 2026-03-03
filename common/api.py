@@ -89,7 +89,7 @@ def test_download_speedtest() -> float:
 
 
 def test_speed_single(name: str):
-    url = config_args.controller_url + "/proxies/🔰 节点选择"
+    url = config_args.controller_url + f"/proxies/{config_args.target_group}"
     response = put(url, json={"name": name})
     if response.status_code // 100 != 2 or response.text:
         logger.error(f"Failed to set proxy {name}: {response.text}")
@@ -101,7 +101,7 @@ def test_speed_single(name: str):
 
 @retry_dec(test_args.test_latency_retry)
 @func_set_timeout(test_args.latency_call_timeout)
-def get_latency_once(url: str, group_name: str = "🔰 节点选择") -> dict[str, int]:
+def get_latency_once(url: str, group_name) -> dict[str, int]:
     url = (
         config_args.controller_url
         + f"/group/{group_name}/delay?url={url}&timeout={test_args.latency_timeout}"
