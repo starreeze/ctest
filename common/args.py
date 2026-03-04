@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Literal, cast
 
 from iterwrap import HfArgumentParser
 from rich.logging import RichHandler
@@ -10,6 +10,7 @@ from rich.logging import RichHandler
 
 @dataclass
 class Config:
+    mode: Literal["meta", "verge"] = field(default="verge")
     unsupported_names: list[str] = field(
         default_factory=lambda: ["cipher: chacha20-poly1305", "obfs: none", "cipher: ss"]
     )
@@ -46,6 +47,7 @@ class Config:
     min_speed_threshold_kbps: int = field(
         default=512, metadata={"help": "minimum speed in KB/s, below which is considered a failure"}
     )
+    meta_start_command: str = field(default="mihomo -d profiles")
 
 
 @dataclass

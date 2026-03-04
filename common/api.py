@@ -2,6 +2,8 @@
 # @Date    : 2025-04-02 10:11:24
 # @Author  : Shangyu.Xing (starreeze@foxmail.com)
 "interface with the clash meta core & speedtest api"
+import os
+import subprocess
 import time
 from typing import cast
 
@@ -173,3 +175,19 @@ def restart_core():
         logger.error(f"The response code is not successful when restarting the core: {resp.text}")
         raise RuntimeError()
     logger.info("Core restarted.")
+
+
+class MetaLifecycle:
+    def __init__(self):
+        self.process: subprocess.Popen | None = None
+
+    def start(self) -> None:
+        self.process = subprocess.Popen(config_args.meta_start_command, shell=True)
+        time.sleep(10)
+
+    def stop(self) -> None:
+        if self.process is not None:
+            self.process.terminate()
+            self.process.wait()
+            self.process = None
+        os.system("pkill -f mihomo")
