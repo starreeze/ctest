@@ -82,21 +82,45 @@ def has_unsupported_field(proxy: dict) -> bool:
     return False
 
 
+def get_proxy_identity_label(proxy: dict) -> str:
+    """Return a stable label to disambiguate proxies with conflicting names."""
+    for field in ("source", "provider", "proxy-provider", "proxy_provider", "provider-name", "provider_name"):
+        value = proxy.get(field)
+        if value:
+            return str(value)
+    return f"{proxy['server']}:{proxy['port']}"
+
+
+def build_conflict_name(original_name: str, proxy: dict, used_names: set[str]) -> str:
+    """Build a unique name for a proxy whose original name conflicts with another endpoint."""
+    label = get_proxy_identity_label(proxy)
+    candidate = f"{original_name} [{label}]"
+    if candidate not in used_names:
+        return candidate
+
+    suffix = 2
+    while True:
+        candidate = f"{original_name} [{label}] #{suffix}"
+        if candidate not in used_names:
+            return candidate
+        suffix += 1
+
+
 def handle_redundant_and_conflicts(proxies: list[dict]) -> tuple[list[dict], dict[str, str]]:
     """
     Remove redundant proxies (same server:port) and rename conflicting names.
 
     - For redundant entries (different names, same server:port): keep only the first one
-    - For conflict names (same name, different server/port): rename duplicates with suffix
+    - For conflict names (same name, different server/port): rename duplicates with an endpoint/provider label
 
     Returns:
         tuple: (filtered_proxies, server_port_to_name) where server_port_to_name maps
                "server:port" to the final proxy name (possibly renamed)
     """
     server_port_to_proxy = {}  # Maps "server:port" -> first proxy dict
-    name_to_count = defaultdict(int)  # Track how many times we've seen each name
     name_to_server_port = {}  # Maps name -> "server:port" for first occurrence
     server_port_to_name = {}  # Maps "server:port" -> final name (possibly renamed)
+    used_names = set()
 
     result = []
 
@@ -118,8 +142,7 @@ def handle_redundant_and_conflicts(proxies: list[dict]) -> tuple[list[dict], dic
             if name_to_server_port[original_name] != server_port:
                 # This is a conflict - same name, different server/port
                 # Rename this proxy
-                name_to_count[original_name] += 1
-                new_name = f"{original_name} #{name_to_count[original_name]}"
+                new_name = build_conflict_name(original_name, proxy, used_names)
                 logger.debug(f"Renaming conflicting proxy: {original_name} -> {new_name}")
                 proxy = proxy.copy()  # Don't modify the original
                 proxy["name"] = new_name
@@ -128,12 +151,12 @@ def handle_redundant_and_conflicts(proxies: list[dict]) -> tuple[list[dict], dic
                 server_port_to_name[server_port] = new_name
         else:
             # First time seeing this name
-            name_to_count[original_name] = 1
             name_to_server_port[original_name] = server_port
             server_port_to_name[server_port] = original_name
 
         # Add this proxy to our results
         server_port_to_proxy[server_port] = proxy
+        used_names.add(proxy["name"])
         result.append(proxy)
 
     return result, server_port_to_name
