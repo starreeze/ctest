@@ -75,7 +75,7 @@ def get_proxy_identity_label(proxy: dict) -> str:
         value = proxy.get(field)
         if value:
             return str(value)
-    return f"{proxy['server']}:{proxy['port']}"
+    return str(proxy["server"])
 
 
 def build_conflict_name(original_name: str, proxy: dict, used_names: set[str]) -> str:
@@ -93,64 +93,57 @@ def build_conflict_name(original_name: str, proxy: dict, used_names: set[str]) -
         suffix += 1
 
 
-def handle_redundant_and_conflicts(proxies: list[dict]) -> tuple[list[dict], dict[str, str]]:
+def handle_redundant_and_conflicts(proxies: list[dict]) -> tuple[list[dict], dict[str, str], set[str]]:
     """
-    Remove redundant proxies (same server:port) and rename conflicting names.
+    Remove redundant proxies (same host) and rename conflicting names.
 
-    - For redundant entries (different names, same server:port): keep only the first one
-    - For conflict names (same name, different server/port): rename duplicates with an endpoint/provider label
+    - For redundant entries (different names, same host): keep only the first one
+    - For conflict names (same name, different host): rename duplicates with an endpoint/provider label
 
     Returns:
-        tuple: (filtered_proxies, server_port_to_name) where server_port_to_name maps
-               "server:port" to the final proxy name (possibly renamed)
+        tuple: (filtered_proxies, host_to_name, skipped_names)
     """
-    server_port_to_proxy = {}  # Maps "server:port" -> first proxy dict
-    name_to_server_port = {}  # Maps name -> "server:port" for first occurrence
-    server_port_to_name = {}  # Maps "server:port" -> final name (possibly renamed)
-    used_names = set()
+    host_to_proxy: dict[str, dict] = {}
+    name_to_host: dict[str, str] = {}
+    host_to_name: dict[str, str] = {}
+    used_names: set[str] = set()
+    skipped_names: set[str] = set()
 
     result = []
 
     for proxy in proxies:
         original_name = proxy["name"]
-        server_port = f"{proxy['server']}:{proxy['port']}"
+        host = str(proxy["server"])
 
-        # Check if this server:port combination already exists
-        if server_port in server_port_to_proxy:
-            # This is a redundant entry (different name, same server:port)
-            # Skip it - we keep only the first one
+        if host in host_to_proxy:
+            if original_name != host_to_proxy[host]["name"]:
+                skipped_names.add(original_name)
             logger.debug(
-                f"Skipping redundant proxy: {original_name} (duplicate of {server_port_to_proxy[server_port]['name']})"
+                f"Skipping redundant proxy: {original_name} (duplicate of {host_to_proxy[host]['name']})"
             )
             continue
 
-        # Check if this name already exists with different server:port
-        if original_name in name_to_server_port:
-            if name_to_server_port[original_name] != server_port:
-                # This is a conflict - same name, different server/port
-                # Rename this proxy
+        if original_name in name_to_host:
+            if name_to_host[original_name] != host:
                 new_name = build_conflict_name(original_name, proxy, used_names)
                 logger.debug(f"Renaming conflicting proxy: {original_name} -> {new_name}")
-                proxy = proxy.copy()  # Don't modify the original
+                proxy = proxy.copy()
                 proxy["name"] = new_name
-                # Update tracking for the new name
-                name_to_server_port[new_name] = server_port
-                server_port_to_name[server_port] = new_name
+                name_to_host[new_name] = host
+                host_to_name[host] = new_name
         else:
-            # First time seeing this name
-            name_to_server_port[original_name] = server_port
-            server_port_to_name[server_port] = original_name
+            name_to_host[original_name] = host
+            host_to_name[host] = original_name
 
-        # Add this proxy to our results
-        server_port_to_proxy[server_port] = proxy
+        host_to_proxy[host] = proxy
         used_names.add(proxy["name"])
         result.append(proxy)
 
-    return result, server_port_to_name
+    return result, host_to_name, skipped_names
 
 
 def update_proxy_references(
-    data: dict, original_proxies: list[dict], removed_names: set[str], server_port_to_name: dict[str, str]
+    data: dict, original_proxies: list[dict], removed_names: set[str], host_to_name: dict[str, str]
 ) -> None:
     """
     Update all references to proxy names throughout the profile.
@@ -159,53 +152,44 @@ def update_proxy_references(
         data: The profile dictionary
         original_proxies: The original list of proxies before filtering
         removed_names: Set of proxy names that were removed
-        server_port_to_name: Maps "server:port" to final proxy name
+        host_to_name: Maps server address to final proxy name
     """
     if "proxy-groups" not in data:
         return
 
-    # Build a mapping from original proxy name to server:port for each occurrence
-    # This is needed to handle multiple proxies with the same name
     name_occurrences = defaultdict(list)
     for proxy in original_proxies:
-        server_port = f"{proxy['server']}:{proxy['port']}"
-        name_occurrences[proxy["name"]].append(server_port)
+        name_occurrences[proxy["name"]].append(str(proxy["server"]))
 
     for group in data["proxy-groups"]:
         if "proxies" in group:
             updated_proxies = []
-            # Track which occurrence of each name we're at
             occurrence_counter = defaultdict(int)
 
             for proxy_name in group["proxies"]:
-                # Skip if this proxy was removed
                 if proxy_name in removed_names:
                     logger.debug(
                         f"Removing reference to deleted proxy '{proxy_name}' from group '{group['name']}'"
                     )
                     continue
 
-                # Find which occurrence of this name we're dealing with
                 occurrences = name_occurrences.get(proxy_name, [])
                 if occurrence_counter[proxy_name] < len(occurrences):
-                    server_port = occurrences[occurrence_counter[proxy_name]]
+                    host = occurrences[occurrence_counter[proxy_name]]
                     occurrence_counter[proxy_name] += 1
 
-                    # Get the final name for this server:port
-                    if server_port in server_port_to_name:
-                        final_name = server_port_to_name[server_port]
+                    if host in host_to_name:
+                        final_name = host_to_name[host]
                         if final_name != proxy_name:
                             logger.debug(
                                 f"Updating reference '{proxy_name}' -> '{final_name}' in group '{group['name']}'"
                             )
                         updated_proxies.append(final_name)
                     else:
-                        # This server:port was removed (redundant or unsupported)
                         logger.debug(
-                            f"Removing reference to deleted proxy '{proxy_name}' (server:port not found) from group '{group['name']}'"
+                            f"Removing reference to deleted proxy '{proxy_name}' (host not found) from group '{group['name']}'"
                         )
                 else:
-                    # This shouldn't happen, but keep the name as-is if we can't find it
                     updated_proxies.append(proxy_name)
 
             group["proxies"] = updated_proxies
@@ -257,8 +241,8 @@ def fix(profile_path: str):
     """
     Fix clash profile by:
     1. Removing proxies with unsupported fields
-    2. Removing redundant proxies (same server:port, different names)
-    3. Renaming conflict names (same name, different server:port)
+    2. Removing redundant proxies (same host, different names)
+    3. Renaming conflict names (same name, different host)
     4. Updating all references to renamed/removed proxies in proxy-groups
     5. Filtering out proxies that have failed consecutively based on failure database
     """
@@ -281,10 +265,10 @@ def fix(profile_path: str):
     failure_filtered_names = []
     proxies_after_failure_filter = []
     for proxy in original_proxies:
-        server_port = f"{proxy['server']}:{proxy['port']}"
-        if server_port in filtered_by_failures:
+        host = str(proxy["server"])
+        if host in filtered_by_failures:
             failure_filtered_names.append(proxy["name"])
-            logger.debug(f"Filtering proxy {proxy['name']} ({server_port}) due to consecutive failures")
+            logger.debug(f"Filtering proxy {proxy['name']} ({host}) due to consecutive failures")
         else:
             proxies_after_failure_filter.append(proxy)
 
@@ -307,15 +291,15 @@ def fix(profile_path: str):
 
     # Step 2: Handle redundant and conflict names
     initial_count = len(supported_proxies)
-    fixed_proxies, server_port_to_name = handle_redundant_and_conflicts(supported_proxies)
+    fixed_proxies, host_to_name, skipped_names = handle_redundant_and_conflicts(supported_proxies)
     redundant_count = initial_count - len(fixed_proxies)
 
     logger.info(f"Removed {redundant_count} redundant proxies")
     logger.info(f"Final proxy count: {len(fixed_proxies)}")
 
     # Step 3: Update all references throughout the profile
-    removed_names = set(unsupported_names) | set(failure_filtered_names)
-    update_proxy_references(profile_dict, original_proxies, removed_names, server_port_to_name)
+    removed_names = set(unsupported_names) | set(failure_filtered_names) | skipped_names
+    update_proxy_references(profile_dict, original_proxies, removed_names, host_to_name)
 
     # Update the profile dict
     profile_dict["proxies"] = fixed_proxies

@@ -91,16 +91,15 @@ def test_latency_speed():
 
     # Update failure database - collect all failures first, then batch update
     failure_db = ProxyFailureDB()
-    failed_proxies = []
+    failed_proxies: list[str] = []
     for proxy_dict in config["proxies"]:
         proxy_name = proxy_dict["name"]
-        server = proxy_dict["server"]
-        port = proxy_dict["port"]
+        host = str(proxy_dict["server"])
 
         # Check if this proxy failed (not in valid results)
         if proxy_name not in all_valid:
-            failed_proxies.append((server, port))
-            logger.debug(f"Will record failure for {proxy_name} ({server}:{port})")
+            failed_proxies.append(host)
+            logger.debug(f"Will record failure for {proxy_name} ({host})")
 
     # Batch record all failures at once
     if failed_proxies:
@@ -111,15 +110,14 @@ def test_latency_speed():
     # Record failures for proxies that produced no successful throughput sample.
     # Completed-but-slow results are left in the profile ranking and are not persisted.
     name_to_proxy = {proxy["name"]: proxy for proxy in config["proxies"]}
-    abort_failures = []
+    abort_failures: list[str] = []
     for proxy_name, (speed, latency) in name2ls.items():
         if speed == 0:
             if proxy_name in name_to_proxy:
                 proxy_dict = name_to_proxy[proxy_name]
-                server = proxy_dict["server"]
-                port = proxy_dict["port"]
-                abort_failures.append((server, port))
-                logger.debug(f"Will record failure for {proxy_name} ({server}:{port}): no successful speed sample")
+                host = str(proxy_dict["server"])
+                abort_failures.append(host)
+                logger.debug(f"Will record failure for {proxy_name} ({host}): no successful speed sample")
 
     if should_persist_speed_failures(len(name2ls), len(abort_failures)):
         failure_db.record_failures_batch(abort_failures)

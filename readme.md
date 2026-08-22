@@ -74,7 +74,7 @@ This penalizes flaky endpoints and avoids ranking a node by one lucky peak. Eigh
 
 During throughput tests the core is switched to `global` mode and the node is selected on both `GLOBAL` and `--target_group`, then the previous mode is restored. That keeps mixed-port measurement traffic on the node being tested instead of following Clash rules.
 
-Nodes with **no successful sample** (timeout/connect/0.00 MiB/s) are written to the failure database. Completed-but-slow nodes stay in the profile ranking and are not persisted. In adaptive mode, if at least `--speed_outage_min_samples` nodes are tested and **every** one aborted, those writes are skipped because the shared measurement endpoint itself is likely down.
+Nodes with **no successful sample** (timeout/connect/0.00 MiB/s) are written to the failure database, keyed by host (not host:port). Completed-but-slow nodes stay in the profile ranking and are not persisted. In adaptive mode, if at least `--speed_outage_min_samples` nodes are tested and **every** one aborted, those writes are skipped because the shared measurement endpoint itself is likely down. Dedup during `fix` uses the same host key, so extra ports on a host that already failed are dropped together.
 
 `--speed_test_url` must use HTTPS. One HTTPS redirect is followed; an HTTP hop or a second redirect fails the probe. Requests send `Referer` set to the URL origin so Cloudflare `__down` accepts 16 MiB probes. The URL may contain a `{bytes}` placeholder, or point to a fixed object on a server that supports byte ranges. Prefer an endpoint you operate if repeatability matters; public endpoints add server and peering variability.
 

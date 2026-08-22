@@ -5,7 +5,7 @@
 This repository builds a usable Clash/Mihomo profile from public proxy feeds. The normal pipeline is:
 
 1. `function/update.py` reads enabled, non-comment lines from `urls.txt`, expands any `strftime` date tokens, rewrites GitHub/`cdn.jsdelivr.net` feeds to `fastly.jsdelivr.net`, URL-encodes the feeds, and asks a subconverter backend for a merged Clash profile. Default backend is 肥羊 `api.v1.mk`; fallback is `pub-api-1.bianyuan.xyz`, which keeps a valid Clash YAML but drops Mihomo types.
-2. `function/fix.py` removes unsupported or repeatedly failing endpoints, deduplicates `server:port`, resolves duplicate names, repairs group references, and creates bounded test groups.
+2. `function/fix.py` removes unsupported or repeatedly failing endpoints, deduplicates by host, resolves duplicate names, repairs group references, and creates bounded test groups.
 3. `function/speed.py` asks the Clash/Mihomo controller to measure reachability/latency, measures selected endpoints (adaptive HTTPS by default; `--speed_test_mode sdk` for speedtest-cli), records failures in SQLite, renames nodes as `latency - speed - original_name`, sorts them, and rewrites proxy groups.
 4. `main.py` orchestrates the full workflow and may start/stop a local Mihomo process in `--mode meta`.
 
@@ -15,7 +15,7 @@ The scripts mutate the newest configured profile in place. Treat profile writes 
 
 - `common/args.py`: dataclass-backed CLI configuration, platform-specific profile discovery, logging, and runtime proxy environment setup. Importing it has side effects and expects the profile directory to exist unless `--profiles` is supplied.
 - `common/api.py`: Clash/Mihomo controller calls plus latency and throughput measurement.
-- `common/db.py`: persistent failure tracking keyed by `server, port`.
+- `common/db.py`: persistent failure tracking keyed by host (`server`). Older `(server, port)` databases are collapsed to one row per host on open.
 - `common/utils.py`: strict Clash YAML loading and custom YAML emission.
 - `function/update.py`: feed aggregation and subconverter fallback.
 - `function/fix.py`: endpoint filtering, deduplication, renaming, and group reconstruction.
@@ -67,7 +67,7 @@ Remove generated `__pycache__` directories after ad hoc checks. End-to-end valid
 - Before adding a feed, verify that its raw URL is stable, returns subscription or Clash-compatible content rather than an HTML/error page, materially adds unique endpoint identities after the full merge, and yields endpoints accepted by the configured subconverter and Mihomo. GitHub raw and `cdn.jsdelivr.net/gh/` URLs are rewritten to `fastly.jsdelivr.net/gh/` because `api.v1.mk` returns nginx 403 on `raw.githubusercontent.com` and `cdn.jsdelivr.net` but will fetch the Fastly/Gcore jsDelivr hosts and keep VLESS/hy2.
 - Never write unvalidated converter output to a live profile. Keep `load_raw_clash_yaml()` validation and the temporary-file-plus-`os.replace()` update pattern. Skip a subconverter backend that returns only legacy Clash types (`ss`/`vmess`/`trojan`/...) when a later backend still emits Mihomo types (`vless`, `hysteria2`, `tuic`, ...). `target=clash` is not enough: some public backends silently drop those nodes. If the HTTP body is otherwise valid YAML but not strict UTF-8, replace invalid sequences rather than aborting the merge.
 - If v1.mk later stops converting jsDelivr feeds into inline `proxies`, do not switch the live path to `api.asailor.org` default mode (that emits `proxy-providers` and this pipeline requires named `proxies` plus `external.ini` groups). A future replacement is: fetch a nodelist from `https://api.asailor.org/sub?target=clash&list=true&url=...` (server-side parse, keeps Mihomo types), then locally wrap those proxies into groups using the existing external config / `function/fix.py` group reconstruction.
-- Maintain endpoint identity semantics across filtering and renaming: persistence/deduplication is keyed by `server:port`, while Clash group references are keyed by node name.
+- Maintain endpoint identity semantics across filtering and renaming: persistence/deduplication is keyed by host (`server`), while Clash group references are keyed by node name. Multiple ports on the same host are one endpoint.
 - When changing proxy names or filtering logic, update every affected `proxy-groups[*].proxies` reference and test duplicate endpoint, duplicate name, unsupported field, IPv6 server, and empty-result cases.
 - Keep the generated YAML acceptable to Clash/Mihomo: retain Unicode names, quote every string scalar (unquoted `8e45` is a YAML 1.1 float and fatal-exits as an invalid REALITY short-id), and emit proxy mappings in flow style. After writing, run `mihomo -t` and drop any remaining proxy that still fatal-exits the core.
 - Controller requests to localhost must bypass the runtime proxy. External measurement traffic must traverse the selected node: speed tests switch the core to `global` mode, select the node on both `GLOBAL` and the configured target group, then restore the previous mode.
