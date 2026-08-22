@@ -3,3 +3,4 @@ speedtest-cli
 func_timeout
 PyYAML
 iterwrap>=0.4
+requests

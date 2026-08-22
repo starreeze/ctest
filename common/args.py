@@ -24,10 +24,24 @@ class Config:
     discard: bool = field(
         default=True, metadata={"help": "discard the proxies that are not valid in latency test"}
     )
-    subconvert_base_url: str = field(default="https://api.dler.io/sub?target=clash")
+    subconvert_base_urls: list[str] = field(
+        default_factory=lambda: [
+            "https://pub-api-1.bianyuan.xyz/sub?target=clash",
+            "https://api.dler.io/sub?target=clash",
+            "https://api.v1.mk/sub?target=clash",
+            "https://url.v1.mk/sub?target=clash",
+            "https://sub.xeton.dev/sub?target=clash",
+            "https://sub.d1.mk/sub?target=clash",
+            "https://sub.maoxiongnet.com/sub?target=clash",
+            "https://api.wcc.best/sub?target=clash",
+        ],
+        metadata={"help": "subconverter backends, tried in order until a valid clash YAML is returned"},
+    )
     subconvert_config_url: str = field(
         default="https://raw.githubusercontent.com/starreeze/blogimage/main/subconverter/external.ini"
     )
+    subconvert_timeout: int = field(default=180, metadata={"help": "timeout in seconds for subconverter requests"})
+    subconvert_user_agent: str = field(default="clash-meta/1.19.30")
     target_group: str = field(default="🔰 节点选择")
     max_proxies_per_group: int = field(
         default=100, metadata={"help": "maximum proxies per test group for splitting large groups"}
@@ -46,6 +60,9 @@ class Config:
     )
     min_speed_threshold_kbps: int = field(
         default=512, metadata={"help": "minimum speed in KB/s, below which is considered a failure"}
+    )
+    load_balance_strategy: str = field(
+        default="round-robin", metadata={"help": "strategy for load-balance proxy groups"}
     )
     meta_start_command: str = field(default="mihomo -d profiles")
 
@@ -68,12 +85,12 @@ class TestArgs:
     )
     max_num: int = field(default=3, metadata={"help": "the max valid proxies to return in speed test"})
     load_balance_thres: float = field(
-        default=2.0, metadata={"help": "the min MB/s to be valid for load balancing"}
+        default=0.5, metadata={"help": "the min MB/s to be valid for load balancing (512 KB/s)"}
     )
     update_profile: bool = field(
         default=True, metadata={"help": "update profile before running tests in main"}
     )
-    test_speed: bool = field(default=False, metadata={"help": "test speed in addition to latency"})
+    test_speed: bool = field(default=True, metadata={"help": "test speed in addition to latency"})
     test_latency_retry: int = field(default=5, metadata={"help": "retry times for latency test"})
 
 
@@ -112,9 +129,13 @@ if not config_args.profiles:
 
 logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]", handlers=[RichHandler()])
 logger = logging.getLogger("rich")
-proxies = {"http": config_args.proxy_url, "https": config_args.proxy_url}
-for name in proxies:
-    os.environ[name.lower()] = os.environ[name.upper()] = proxies[name]
+
+
+def apply_runtime_proxy_env() -> None:
+    """Route outbound tests through the local clash mixed port, but keep localhost API direct."""
+    os.environ["http_proxy"] = os.environ["HTTP_PROXY"] = config_args.proxy_url
+    os.environ["https_proxy"] = os.environ["HTTPS_PROXY"] = config_args.proxy_url
+    os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
 
 
 def get_newest_profile() -> str:

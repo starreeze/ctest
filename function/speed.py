@@ -128,9 +128,11 @@ def test_latency_speed():
             continue
         if start == -2:
             names = list(
-                filter(lambda x: float(x.split(" - ")[1]) > test_args.load_balance_thres, replaced_names)
+                filter(lambda x: float(x.split(" - ")[1]) >= test_args.load_balance_thres, replaced_names)
             )
             group["proxies"] = names if names else [replaced_names[0]]
+            group["strategy"] = config_args.load_balance_strategy
+            group.pop("tolerance", None)
             new_groups.append(group)
             continue
         group["proxies"][start:] = replaced_names

@@ -5,15 +5,12 @@
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
-
-import yaml
 
 from common.args import config_args as args
 from common.args import get_newest_profile, logger
 from common.db import ProxyFailureDB
-from common.utils import dump_yaml
+from common.utils import dump_yaml, load_raw_clash_yaml
 
 
 def create_proxy_groups(proxy_names: list[str], max_size: int) -> list[dict]:
@@ -40,28 +37,11 @@ def create_proxy_groups(proxy_names: list[str], max_size: int) -> list[dict]:
 
 def preprocess_profile(profile: str) -> dict:
     """Preprocess profile string and return as YAML dict"""
-    profile = profile.replace("!<str>", "!!str")
-    profile = quote_ipv6_server_addresses(profile)
-    in_yaml = yaml.safe_load(profile)
+    in_yaml = load_raw_clash_yaml(profile)
     for proxy in in_yaml["proxies"]:
         if "obfs" in proxy and "obfs-password" not in proxy:
             proxy["obfs-password"] = "none"
     return in_yaml
-
-
-def quote_ipv6_server_addresses(yaml_content: str) -> str:
-    """Quote IPv6 addresses in server fields"""
-
-    def replacer(match):
-        value = match.group(2)
-        if ":" in value:
-            return f'{match.group(1)} "{value}"'
-        else:
-            return match.group(0)
-
-    pattern = r"(server:)\s+([0-9a-fA-F:]+)"
-    result = re.sub(pattern, replacer, yaml_content)
-    return result
 
 
 def has_unsupported_field(proxy: dict) -> bool:
@@ -297,7 +277,12 @@ def fix(profile_path: str):
 
     # Find and replace the main proxy selection group(s)
     # Add new groups at the beginning
+    profile_dict.pop("global-client-fingerprint", None)
     profile_dict["proxy-groups"] += new_proxy_groups
+    for group in profile_dict.get("proxy-groups", []):
+        if group.get("type") == "load-balance":
+            group["strategy"] = args.load_balance_strategy
+            group.pop("tolerance", None)
     logger.info(f"Updated proxy groups: {len(new_proxy_groups)} selection group(s)")
 
     # Write back to file

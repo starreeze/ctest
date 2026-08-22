@@ -26,9 +26,9 @@ You can also modify more arguments there. -->
 python run.py
 ```
 
-It will by default **overwrite** your latest profile using links specified in urls.txt. Since some of the naming conventions are not recognized by clash meta, automatic fix will be done.
+It will by default **overwrite** your latest profile using links specified in urls.txt. Conversion backends are tried in order until a valid clash YAML is returned; HTML/error pages are never written. Since some of the naming conventions are not recognized by clash meta, automatic fix will be done.
 
-You need to manually reactivate your profile before pressing ENTER to run latency test. Specify `--test_speed` to run real speed test.
+You need to manually reactivate your profile before pressing ENTER to run latency test (unless `--mode meta`). Speed test is enabled by default; pass `--test_speed False` to skip it.
 
 After finishing, reactivate your profile again. The proxy names now have their latency and speed info on them: `{latency}-{download_MBps}-{original_name}`. They are sorted by downloading speed by default.
 
