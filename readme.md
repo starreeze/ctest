@@ -23,14 +23,14 @@ You can also modify more arguments there. -->
 ### Entire solution
 
 ```bash
-python run.py
+python main.py
 ```
 
 It will by default **overwrite** your latest profile using links specified in urls.txt. Conversion backends are tried in order until a valid clash YAML is returned; HTML/error pages are never written. Since some of the naming conventions are not recognized by clash meta, automatic fix will be done.
 
 You need to manually reactivate your profile before pressing ENTER to run latency test (unless `--mode meta`). Speed test is enabled by default; pass `--test_speed False` to skip it.
 
-After finishing, reactivate your profile again. The proxy names now have their latency and speed info on them: `{latency}-{download_MBps}-{original_name}`. They are sorted by downloading speed by default.
+After finishing, reactivate your profile again. The proxy names now have their latency and speed info on them: `{latency_ms} - {download_MiBps} - {original_name}`. They are sorted by downloading speed by default.
 
 Below are some separate functions for reference only and you may not need them.
 
@@ -44,7 +44,7 @@ After completion, reactivate your clash profile.
 
 ### Speed test
 
-The speed test script will test the speed of all proxies in the profile, and add speed and latency information in the proxy names.
+The speed test script latency-tests the profile's generated test groups. It then throughput-tests latency-sorted nodes until `--max_num` nodes meet the configured threshold, and adds latency and speed information to their names.
 
 Make sure that your clash profile is constructed by [subconverter](https://github.com/tindy2013/subconverter) which uses the [external config](https://github.com/tindy2013/subconverter/blob/master/README-cn.md#%E8%B0%83%E7%94%A8%E8%AF%B4%E6%98%8E-%E8%BF%9B%E9%98%B6) from https://raw.githubusercontent.com/starreeze/blogimage/main/subconverter/external.ini. You may also need to check the external controller port and the proxy mixed port in your clash settings. You can either modify the `args.py` or modify the settings upon difference.
 
@@ -53,6 +53,34 @@ python -m function.speed
 ```
 
 After completion, reactivate your clash profile.
+
+The default `--speed_test_mode sdk` preserves the original `speedtest-cli` behavior. A standalone adaptive HTTPS implementation is also available:
+
+```bash
+python -m function.speed --speed_test_mode adaptive
+```
+
+Adaptive mode uses `https://speed.cloudflare.com/__down?bytes={bytes}` by default. It ramps through 1, 4, 8, 16, and 32 MiB probes until the response body takes at least three seconds, then collects three measurements at that size. Connection setup/TTFB is logged separately from body goodput. The stored score is:
+
+```text
+successful trial fraction * p25(successful body goodput in MiB/s)
+```
+
+This penalizes flaky endpoints and avoids ranking a node by one lucky peak. A failed ramp size is retried at that same size rather than silently falling back to an easier result. Low adaptive scores affect the current profile but are not persisted as proxy failures because a shared public measurement endpoint may itself be unhealthy.
+
+Eight MiB is sufficient when its body transfer lasts roughly three seconds. Faster nodes automatically move to 16 or 32 MiB; slow nodes stop earlier. A long connection setup alone does not trigger a larger payload because it is measured as TTFB, not body-transfer time. With defaults, a node that stops at 8 MiB transfers at most 29 MiB across the ramp and trials; a node that reaches 32 MiB can transfer at most 125 MiB.
+
+The main adaptive controls are:
+
+```bash
+--speed_http_sizes_mb 1 4 8 16 32
+--speed_http_min_duration 3
+--speed_http_trials 3
+--speed_http_percentile 0.25
+--speed_http_max_transfer_seconds 30
+```
+
+`--speed_test_url` must use HTTPS. It may contain a `{bytes}` placeholder, or point to a fixed object on a server that supports byte ranges. Prefer an endpoint you operate if repeatability matters; public endpoints add server and peering variability.
 
 ## License
 

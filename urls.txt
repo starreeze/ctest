@@ -25,3 +25,8 @@ https://mm.mibei77.com/%Y/%m.%dClasholr.yaml
 # https://jiang.netlify.app/
 # https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.yml
 # https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/EternityAir.yml
+https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs_base64.txt
+https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt
+https://raw.githubusercontent.com/Au1rxx/free-vpn-subscriptions/main/output/clash.yaml
+https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/clash.yaml
+https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt

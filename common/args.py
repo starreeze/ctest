@@ -69,7 +69,16 @@ class Config:
 
 @dataclass
 class TestArgs:
-    speed_test_url: str = field(default="http://speedtest.tele2.net/100MB.zip")
+    speed_test_mode: Literal["sdk", "adaptive"] = field(
+        default="sdk",
+        metadata={"help": "throughput test implementation: speedtest-cli SDK or adaptive HTTPS download"},
+    )
+    speed_test_url: str = field(
+        default="https://speed.cloudflare.com/__down?bytes={bytes}",
+        metadata={
+            "help": "adaptive download URL; use {bytes} for the requested size or a fixed file with Range support"
+        },
+    )
     speed_test_retry: int = field(default=1)
     latency_test_urls: list[str] = field(default_factory=lambda: ["https://google.com", "https://github.com"])
     latency_test_times: int = field(default=1)
@@ -77,15 +86,36 @@ class TestArgs:
     latency_call_timeout: int = field(default=300)
     speedtest_call_timeout: int = field(default=300)
     core_restart_timeout: int = field(default=10)
-    speed_duration: int = field(default=15)
-    speed_window_size: int = field(default=5)
+    speed_http_sizes_mb: list[int] = field(
+        default_factory=lambda: [1, 4, 8, 16, 32],
+        metadata={"help": "adaptive probe sizes in MiB, tried in ascending order"},
+    )
+    speed_http_min_duration: float = field(
+        default=3.0,
+        metadata={"help": "stop ramping once body transfer time reaches this many seconds"},
+    )
+    speed_http_trials: int = field(
+        default=3,
+        metadata={"help": "number of measurements at the selected adaptive probe size"},
+    )
+    speed_http_percentile: float = field(
+        default=0.25,
+        metadata={"help": "successful-goodput percentile used by adaptive mode"},
+    )
+    speed_http_connect_timeout: float = field(default=10.0)
+    speed_http_read_timeout: float = field(default=15.0)
+    speed_http_max_transfer_seconds: float = field(
+        default=30.0,
+        metadata={"help": "maximum body-transfer time for one adaptive probe"},
+    )
+    speed_http_chunk_size_kb: int = field(default=64)
     group_proxy_start: list[int] = field(
         default_factory=lambda: [3, 0, -2, -1, -1, 2, 2, 2, -1, -1, 3],
         metadata={"help": ">0: start position for proxies; -1: no proxy, copy all; -2: load balance"},
     )
     max_num: int = field(default=3, metadata={"help": "the max valid proxies to return in speed test"})
     load_balance_thres: float = field(
-        default=0.5, metadata={"help": "the min MB/s to be valid for load balancing (512 KB/s)"}
+        default=0.5, metadata={"help": "minimum MiB/s score to be valid for load balancing"}
     )
     update_profile: bool = field(
         default=True, metadata={"help": "update profile before running tests in main"}

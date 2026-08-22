@@ -4,7 +4,7 @@ from typing import Iterable
 import yaml
 
 from common.api import get_latency, get_speed
-from common.args import config_args, get_newest_profile, logger, test_args
+from common.args import apply_runtime_proxy_env, config_args, get_newest_profile, logger, test_args
 from common.db import ProxyFailureDB
 from common.utils import dump_yaml
 
@@ -102,12 +102,17 @@ def test_latency_speed():
                 port = proxy_dict["port"]
                 low_speed_failures.append((server, port))
                 logger.debug(
-                    f"Will record failure for {proxy_name} ({server}:{port}) due to low speed: {speed:.2f} MB/s"
+                    f"Will record failure for {proxy_name} ({server}:{port}) due to low speed: {speed:.2f} MiB/s"
                 )
 
-    # Batch record all low-speed failures at once
-    if low_speed_failures and test_args.test_speed:
+    # A shared adaptive endpoint can fail independently of the proxy. Keep its
+    # score for this run, but do not turn it into a persistent proxy failure.
+    if low_speed_failures and test_args.test_speed and test_args.speed_test_mode == "sdk":
         failure_db.record_failures_batch(low_speed_failures)
+    elif low_speed_failures and test_args.test_speed:
+        logger.warning(
+            f"Not persisting {len(low_speed_failures)} low adaptive-speed result(s) as proxy failures"
+        )
 
     replaced_names = replace_name(proxies, name2ls)
     for new_name, proxy in zip(replaced_names, config["proxies"]):
@@ -145,4 +150,5 @@ def test_latency_speed():
 
 
 if __name__ == "__main__":
+    apply_runtime_proxy_env()
     test_latency_speed()
