@@ -26,19 +26,17 @@ class Config:
     )
     subconvert_base_urls: list[str] = field(
         default_factory=lambda: [
-            "https://pub-api-1.bianyuan.xyz/sub?target=clash",
-            "https://api.dler.io/sub?target=clash",
             "https://api.v1.mk/sub?target=clash",
-            "https://url.v1.mk/sub?target=clash",
-            "https://sub.xeton.dev/sub?target=clash",
-            "https://sub.d1.mk/sub?target=clash",
-            "https://sub.maoxiongnet.com/sub?target=clash",
-            "https://api.wcc.best/sub?target=clash",
+            "https://pub-api-1.bianyuan.xyz/sub?target=clash",
         ],
-        metadata={"help": "subconverter backends, tried in order until a valid clash YAML is returned"},
+        metadata={
+            "help": "subconverter backends, tried in order until a valid clash YAML is returned; "
+            "api.v1.mk first (keeps Mihomo types); bianyuan fallback (legacy Clash types only); "
+            "a conversion with no vless/hysteria2/tuic is skipped when a later backend still emits them"
+        },
     )
     subconvert_config_url: str = field(
-        default="https://raw.githubusercontent.com/starreeze/blogimage/main/subconverter/external.ini"
+        default="https://fastly.jsdelivr.net/gh/starreeze/blogimage@main/subconverter/external.ini"
     )
     subconvert_timeout: int = field(default=180, metadata={"help": "timeout in seconds for subconverter requests"})
     subconvert_user_agent: str = field(default="clash-meta/1.19.30")
@@ -59,19 +57,22 @@ class Config:
         default=24, metadata={"help": "hours within which multiple failures count as one"}
     )
     min_speed_threshold_kbps: int = field(
-        default=512, metadata={"help": "minimum speed in KB/s, below which is considered a failure"}
+        default=512, metadata={"help": "minimum speed in KB/s, below which is considered a failure (512 KB/s = 0.5 MiB/s)"}
     )
     load_balance_strategy: str = field(
         default="round-robin", metadata={"help": "strategy for load-balance proxy groups"}
     )
     meta_start_command: str = field(default="mihomo -d profiles")
+    global_group: str = field(
+        default="GLOBAL", metadata={"help": "built-in group selected while the core is in global mode"}
+    )
 
 
 @dataclass
 class TestArgs:
     speed_test_mode: Literal["sdk", "adaptive"] = field(
-        default="sdk",
-        metadata={"help": "throughput test implementation: speedtest-cli SDK or adaptive HTTPS download"},
+        default="adaptive",
+        metadata={"help": "throughput test implementation: adaptive HTTPS download or speedtest-cli SDK"},
     )
     speed_test_url: str = field(
         default="https://speed.cloudflare.com/__down?bytes={bytes}",
@@ -79,7 +80,12 @@ class TestArgs:
             "help": "adaptive download URL; use {bytes} for the requested size or a fixed file with Range support"
         },
     )
-    speed_test_retry: int = field(default=1)
+    speed_test_retry: int = field(
+        default=1,
+        metadata={
+            "help": "retry count for sdk speedtest-cli calls; adaptive mode uses --speed_http_trials instead"
+        },
+    )
     latency_test_urls: list[str] = field(default_factory=lambda: ["https://google.com", "https://github.com"])
     latency_test_times: int = field(default=1)
     latency_timeout: int = field(default=5000)
@@ -87,7 +93,7 @@ class TestArgs:
     speedtest_call_timeout: int = field(default=300)
     core_restart_timeout: int = field(default=10)
     speed_http_sizes_mb: list[int] = field(
-        default_factory=lambda: [1, 4, 8, 16, 32],
+        default_factory=lambda: [1, 4, 8, 16],
         metadata={"help": "adaptive probe sizes in MiB, tried in ascending order"},
     )
     speed_http_min_duration: float = field(
@@ -95,27 +101,48 @@ class TestArgs:
         metadata={"help": "stop ramping once body transfer time reaches this many seconds"},
     )
     speed_http_trials: int = field(
-        default=3,
+        default=2,
         metadata={"help": "number of measurements at the selected adaptive probe size"},
     )
     speed_http_percentile: float = field(
         default=0.25,
         metadata={"help": "successful-goodput percentile used by adaptive mode"},
     )
+    speed_http_connect_overhead: float = field(
+        default=5.0,
+        metadata={"help": "seconds added to the size-based adaptive probe budget for connect/TTFB"},
+    )
     speed_http_connect_timeout: float = field(default=10.0)
-    speed_http_read_timeout: float = field(default=15.0)
+    speed_http_read_timeout: float = field(
+        default=30.0,
+        metadata={"help": "per-chunk stall timeout in seconds, capped by the remaining probe budget"},
+    )
     speed_http_max_transfer_seconds: float = field(
         default=30.0,
-        metadata={"help": "maximum body-transfer time for one adaptive probe"},
+        metadata={"help": "cap on adaptive probe wall time (overhead + size / min_speed_threshold)"},
     )
     speed_http_chunk_size_kb: int = field(default=64)
+    speed_http_ramp_fail_factor: float = field(
+        default=0.85,
+        metadata={"help": "multiply the adaptive score when a larger ramp size fails and a smaller size is reused"},
+    )
+    speed_outage_min_samples: int = field(
+        default=5,
+        metadata={"help": "minimum adaptive speed samples before treating a high fail rate as an endpoint outage"},
+    )
+    speed_outage_fail_ratio: float = field(
+        default=0.8,
+        metadata={
+            "help": "adaptive low-speed fraction that skips failure-DB writes because the shared endpoint looks down"
+        },
+    )
     group_proxy_start: list[int] = field(
         default_factory=lambda: [3, 0, -2, -1, -1, 2, 2, 2, -1, -1, 3],
         metadata={"help": ">0: start position for proxies; -1: no proxy, copy all; -2: load balance"},
     )
-    max_num: int = field(default=3, metadata={"help": "the max valid proxies to return in speed test"})
+    max_num: int = field(default=10, metadata={"help": "stop throughput tests after this many nodes meet --load_balance_thres"})
     load_balance_thres: float = field(
-        default=0.5, metadata={"help": "minimum MiB/s score to be valid for load balancing"}
+        default=1.0, metadata={"help": "minimum MiB/s score to count as a valid speed-test success / load-balance member"}
     )
     update_profile: bool = field(
         default=True, metadata={"help": "update profile before running tests in main"}

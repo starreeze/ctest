@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import os
+import re
+import subprocess
 from collections import defaultdict
 
 from common.args import config_args as args
 from common.args import get_newest_profile, logger
 from common.db import ProxyFailureDB
-from common.utils import dump_yaml, load_raw_clash_yaml
+from common.utils import dump_yaml, load_raw_clash_yaml, mihomo_accepts_vless_encryption
 
 
 def create_proxy_groups(proxy_names: list[str], max_size: int) -> list[dict]:
@@ -59,6 +62,10 @@ def has_unsupported_field(proxy: dict) -> bool:
             for val in proxy.values():
                 if unsupported in str(val):
                     return True
+    if str(proxy.get("type", "")).lower() == "vless":
+        enc = proxy.get("encryption")
+        if enc is not None and not mihomo_accepts_vless_encryption(str(enc)):
+            return True
     return False
 
 
@@ -204,6 +211,48 @@ def update_proxy_references(
             group["proxies"] = updated_proxies
 
 
+_CORE_PROXY_ERROR = re.compile(r"proxy (\d+):\s*(.+)")
+
+
+def drop_proxies_rejected_by_core(profile_path: str, max_drops: int = 32) -> None:
+    """Drop nodes whose fields fatal-exit Mihomo until `mihomo -t` passes."""
+    profile_dir = os.path.dirname(os.path.abspath(profile_path)) or "."
+    for _ in range(max_drops):
+        logger.info("Validating profile with mihomo -t")
+        result = subprocess.run(
+            ["mihomo", "-t", "-d", profile_dir],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            logger.info("mihomo -t passed")
+            return
+        log = result.stdout + result.stderr
+        match = _CORE_PROXY_ERROR.search(log)
+        if not match:
+            raise RuntimeError(f"mihomo rejected profile:\n{log}")
+        idx = int(match.group(1))
+        reason = match.group(2).strip()
+        with open(profile_path, encoding="utf-8") as f:
+            profile_dict = load_raw_clash_yaml(f.read())
+        if idx < 0 or idx >= len(profile_dict["proxies"]):
+            raise RuntimeError(
+                f"mihomo reported proxy {idx} but profile has {len(profile_dict['proxies'])} proxies:\n{log}"
+            )
+        name = profile_dict["proxies"][idx]["name"]
+        logger.warning(f"Dropping proxy {idx} {name!r}: {reason}")
+        del profile_dict["proxies"][idx]
+        for group in profile_dict.get("proxy-groups", []):
+            names = group.get("proxies")
+            if not names:
+                continue
+            group["proxies"] = [item for item in names if item != name] or ["DIRECT"]
+        with open(profile_path, "w", encoding="utf-8") as f:
+            f.write(dump_yaml(profile_dict))
+    raise RuntimeError(f"mihomo still rejects the profile after {max_drops} proxy drops")
+
+
 def fix(profile_path: str):
     """
     Fix clash profile by:
@@ -285,9 +334,9 @@ def fix(profile_path: str):
             group.pop("tolerance", None)
     logger.info(f"Updated proxy groups: {len(new_proxy_groups)} selection group(s)")
 
-    # Write back to file
     with open(profile_path, "w", encoding="utf-8") as f:
         f.write(dump_yaml(profile_dict))
+    drop_proxies_rejected_by_core(profile_path)
 
 
 if __name__ == "__main__":

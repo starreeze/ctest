@@ -8,17 +8,19 @@ import time
 from dataclasses import dataclass
 from math import ceil, floor
 from typing import cast
-from urllib.parse import urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import requests
 import speedtest
 from func_timeout import FunctionTimedOut, func_set_timeout
 from iterwrap import retry_dec
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from common.args import config_args, logger, test_args
 
 header = {"Authorization": f"Bearer {config_args.controller_password}"}
 MEBIBYTE = 1024 * 1024
+REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
 def get(*args, **kwargs):
@@ -31,6 +33,10 @@ def put(*args, **kwargs):
 
 def post(*args, **kwargs):
     return requests.post(*args, **kwargs, headers=header)
+
+
+def patch(*args, **kwargs):
+    return requests.patch(*args, **kwargs, headers=header)
 
 
 @dataclass(frozen=True)
@@ -69,17 +75,89 @@ def validate_adaptive_speed_config() -> list[int]:
         raise ValueError("speed_http_min_duration cannot exceed speed_http_max_transfer_seconds")
     if test_args.speed_http_connect_timeout <= 0 or test_args.speed_http_read_timeout <= 0:
         raise ValueError("adaptive speed timeouts must be positive")
+    if test_args.speed_http_connect_overhead < 0:
+        raise ValueError("speed_http_connect_overhead cannot be negative")
+    if config_args.min_speed_threshold_kbps <= 0:
+        raise ValueError("min_speed_threshold_kbps must be positive")
     if test_args.speed_http_chunk_size_kb <= 0:
         raise ValueError("speed_http_chunk_size_kb must be positive")
+    if not 0 < test_args.speed_http_ramp_fail_factor <= 1:
+        raise ValueError("speed_http_ramp_fail_factor must be in (0, 1]")
     return [size * MEBIBYTE for size in sizes_mb]
+
+
+def probe_time_limit_seconds(size_bytes: int) -> float:
+    """Wall-clock budget: connect/TTFB overhead plus time to finish at the failure-DB speed floor."""
+    if size_bytes <= 0:
+        raise ValueError("probe size must be positive")
+    rate_bytes = config_args.min_speed_threshold_kbps * 1024
+    return min(
+        test_args.speed_http_connect_overhead + size_bytes / rate_bytes,
+        test_args.speed_http_max_transfer_seconds,
+    )
+
+
+def _set_socket_timeout(response: requests.Response, seconds: float) -> None:
+    connection = getattr(response.raw, "connection", None)
+    sock = getattr(connection, "sock", None) if connection is not None else None
+    if sock is not None:
+        sock.settimeout(max(seconds, 0.001))
+
+
+def open_adaptive_download(
+    url: str, headers: dict[str, str], time_limit: float, started_at: float
+) -> requests.Response:
+    """GET url through the local proxy, following at most one HTTPS redirect."""
+    remaining = time_limit - (time.perf_counter() - started_at)
+    if remaining <= 0:
+        raise TimeoutError(f"adaptive download exceeded {time_limit:.1f}s")
+    proxies = {"http": config_args.proxy_url, "https": config_args.proxy_url}
+    read_timeout = min(test_args.speed_http_read_timeout, remaining)
+    connect_timeout = min(test_args.speed_http_connect_timeout, remaining)
+    request_kwargs = {
+        "stream": True,
+        "proxies": proxies,
+        "headers": headers,
+        "params": {"cachebuster": str(time.time_ns())},
+        "timeout": (connect_timeout, read_timeout),
+        "allow_redirects": False,
+    }
+    response = requests.get(url, **request_kwargs)
+    if response.status_code not in REDIRECT_STATUSES:
+        return response
+    location = response.headers.get("Location")
+    current_url = response.url
+    response.close()
+    if not location:
+        raise ValueError("adaptive speed test redirect missing Location")
+    redirect_url = urljoin(current_url, location)
+    if urlsplit(redirect_url).scheme != "https":
+        raise ValueError("adaptive speed test redirected to a non-HTTPS URL")
+    remaining = time_limit - (time.perf_counter() - started_at)
+    if remaining <= 0:
+        raise TimeoutError(f"adaptive download exceeded {time_limit:.1f}s")
+    request_kwargs["timeout"] = (
+        min(test_args.speed_http_connect_timeout, remaining),
+        min(test_args.speed_http_read_timeout, remaining),
+    )
+    response = requests.get(redirect_url, **request_kwargs)
+    if response.status_code in REDIRECT_STATUSES:
+        response.close()
+        raise ValueError("adaptive speed test exceeded one redirect")
+    return response
 
 
 def download_sample(size_bytes: int) -> DownloadSample:
     """Download exactly size_bytes through the selected local proxy and measure body goodput."""
     url_template = test_args.speed_test_url
-    if urlsplit(url_template).scheme != "https":
+    parsed_template = urlsplit(url_template)
+    if parsed_template.scheme != "https":
         raise ValueError("adaptive speed_test_url must use HTTPS")
-    headers = {"Accept-Encoding": "identity", "Cache-Control": "no-cache"}
+    headers = {
+        "Accept-Encoding": "identity",
+        "Cache-Control": "no-cache",
+        "Referer": f"{parsed_template.scheme}://{parsed_template.netloc}/",
+    }
     uses_range = "{bytes}" not in url_template
     if not uses_range:
         url = url_template.format(bytes=size_bytes)
@@ -87,17 +165,10 @@ def download_sample(size_bytes: int) -> DownloadSample:
         url = url_template
         headers["Range"] = f"bytes=0-{size_bytes - 1}"
 
-    proxies = {"http": config_args.proxy_url, "https": config_args.proxy_url}
     request_started = time.perf_counter()
-    with requests.get(
-        url,
-        stream=True,
-        proxies=proxies,
-        headers=headers,
-        params={"cachebuster": str(time.time_ns())},
-        timeout=(test_args.speed_http_connect_timeout, test_args.speed_http_read_timeout),
-        allow_redirects=False,
-    ) as response:
+    time_limit = probe_time_limit_seconds(size_bytes)
+    response = open_adaptive_download(url, headers, time_limit, request_started)
+    try:
         headers_received = time.perf_counter()
         response.raise_for_status()
         if response.status_code // 100 != 2:
@@ -112,22 +183,24 @@ def download_sample(size_bytes: int) -> DownloadSample:
             raise ValueError("adaptive speed test redirected to a non-HTTPS URL")
         downloaded = 0
         body_started = time.perf_counter()
-        for chunk in response.iter_content(chunk_size=test_args.speed_http_chunk_size_kb * 1024):
-            if time.perf_counter() - body_started > test_args.speed_http_max_transfer_seconds:
-                raise TimeoutError(
-                    f"adaptive download exceeded {test_args.speed_http_max_transfer_seconds:.1f}s"
-                )
+        chunk_size = test_args.speed_http_chunk_size_kb * 1024
+        while downloaded < size_bytes:
+            remaining = time_limit - (time.perf_counter() - request_started)
+            if remaining <= 0:
+                raise TimeoutError(f"adaptive download exceeded {time_limit:.1f}s")
+            _set_socket_timeout(response, min(test_args.speed_http_read_timeout, remaining))
+            chunk = response.raw.read(min(chunk_size, size_bytes - downloaded))
             if not chunk:
-                continue
-            downloaded += min(len(chunk), size_bytes - downloaded)
-            if downloaded == size_bytes:
                 break
+            downloaded += len(chunk)
         body_seconds = time.perf_counter() - body_started
+    finally:
+        response.close()
 
     if downloaded != size_bytes:
         raise ValueError(f"adaptive download returned {downloaded} of {size_bytes} requested bytes")
-    if body_seconds > test_args.speed_http_max_transfer_seconds:
-        raise TimeoutError(f"adaptive download exceeded {test_args.speed_http_max_transfer_seconds:.1f}s")
+    if (headers_received - request_started) + body_seconds > time_limit:
+        raise TimeoutError(f"adaptive download exceeded {time_limit:.1f}s")
     if body_seconds <= 0:
         raise ValueError("adaptive download body duration must be positive")
     return DownloadSample(
@@ -143,7 +216,7 @@ def try_download_sample(size_bytes: int) -> DownloadSample | None:
         sample = download_sample(size_bytes)
     except KeyboardInterrupt:
         raise
-    except (requests.RequestException, TimeoutError, ValueError) as e:
+    except (requests.RequestException, Urllib3HTTPError, TimeoutError, ValueError, OSError) as e:
         logger.warning(f"Adaptive download of {size_bytes / MEBIBYTE:.0f} MiB failed: {e}")
         return None
     logger.info(
@@ -159,13 +232,25 @@ def adaptive_download_speed() -> float:
     sizes = validate_adaptive_speed_config()
     selected_size = sizes[0]
     selected_samples: list[DownloadSample | None] = []
+    last_success: DownloadSample | None = None
+    ramp_failed = False
     for size_bytes in sizes:
         sample = try_download_sample(size_bytes)
         if sample is None:
-            selected_size = size_bytes
-            selected_samples = [None]
+            if last_success is not None:
+                selected_size = last_success.size_bytes
+                selected_samples = [last_success]
+                ramp_failed = True
+                logger.info(
+                    f"Adaptive ramp failed at {size_bytes / MEBIBYTE:.0f} MiB; "
+                    f"falling back to {selected_size / MEBIBYTE:.0f} MiB"
+                )
+            else:
+                selected_size = size_bytes
+                selected_samples = [None]
             break
 
+        last_success = sample
         selected_size = size_bytes
         if sample.body_seconds >= test_args.speed_http_min_duration or size_bytes == sizes[-1]:
             selected_samples = [sample]
@@ -184,10 +269,13 @@ def adaptive_download_speed() -> float:
     )
     median_ttfb = percentile([sample.ttfb_ms for sample in successful], 0.5)
     reliable_goodput = availability * lower_goodput
+    if ramp_failed:
+        reliable_goodput *= test_args.speed_http_ramp_fail_factor
     logger.info(
         f"Adaptive result at {selected_size / MEBIBYTE:.0f} MiB: "
         f"availability {availability:.0%}, p{test_args.speed_http_percentile * 100:g} "
         f"{lower_goodput:.2f} MiB/s, median TTFB {median_ttfb:.0f} ms, "
+        f"ramp-fail factor {test_args.speed_http_ramp_fail_factor if ramp_failed else 1:g}, "
         f"reliable goodput {reliable_goodput:.2f} MiB/s"
     )
     return reliable_goodput
@@ -201,8 +289,13 @@ def call_adaptive_speedtest() -> float:
 def test_download_adaptive() -> float:
     try:
         return call_adaptive_speedtest()
+    except KeyboardInterrupt:
+        raise
     except FunctionTimedOut:
         logger.warning("Adaptive speed test exceeded the total call timeout")
+        return 0.0
+    except Exception as e:
+        logger.warning(f"Adaptive speed test failed: {e}")
         return 0.0
 
 
@@ -225,11 +318,32 @@ def test_download_speedtest() -> float:
     return mib_per_second
 
 
-def test_speed_single(name: str):
-    url = config_args.controller_url + f"/proxies/{config_args.target_group}"
+def get_core_mode() -> str:
+    response = get(config_args.controller_url + "/configs")
+    response.raise_for_status()
+    return response.json()["mode"]
+
+
+def set_core_mode(mode: str) -> None:
+    response = patch(config_args.controller_url + "/configs", json={"mode": mode})
+    if response.status_code // 100 != 2:
+        raise RuntimeError(f"Failed to set core mode {mode}: {response.text}")
+    logger.info(f"Core mode set to {mode}")
+
+
+def select_proxy(name: str, group: str) -> bool:
+    url = config_args.controller_url + f"/proxies/{quote(group, safe='')}"
     response = put(url, json={"name": name})
     if response.status_code // 100 != 2 or response.text:
-        logger.error(f"Failed to set proxy {name}: {response.text}")
+        logger.error(f"Failed to set proxy {name} on {group}: {response.text}")
+        return False
+    return True
+
+
+def test_speed_single(name: str):
+    if not select_proxy(name, config_args.global_group):
+        return 0.0
+    if not select_proxy(name, config_args.target_group):
         return 0.0
     if test_args.speed_test_mode == "sdk":
         return test_download_speedtest()
@@ -279,6 +393,11 @@ def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
     "return valid proxy names and their download speed in MiB/s and latency in ms"
     speed_latency: dict[str, tuple[float, int]] = {}
     num_success = 0
+    previous_mode: str | None = None
+    if test_args.test_speed:
+        previous_mode = get_core_mode()
+        if previous_mode != "global":
+            set_core_mode("global")
     try:
         for i, (name, latency) in enumerate(latencies):
             if test_args.test_speed:
@@ -300,6 +419,9 @@ def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
             speed_latency[name] = (speed, latency)
     except KeyboardInterrupt:
         logger.warning("KeyboardInterrupt detected, saving current results...")
+    finally:
+        if previous_mode is not None and previous_mode != "global":
+            set_core_mode(previous_mode)
     return speed_latency
 
 
@@ -320,7 +442,19 @@ class MetaLifecycle:
 
     def start(self) -> None:
         self.process = subprocess.Popen(config_args.meta_start_command, shell=True)
-        time.sleep(10)
+        deadline = time.time() + max(test_args.core_restart_timeout, 30)
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                raise RuntimeError(f"mihomo exited with code {self.process.returncode} before the controller was ready")
+            try:
+                resp = requests.get(f"{config_args.controller_url}/version", headers=header, timeout=1)
+                if resp.ok:
+                    logger.info("Mihomo controller is ready")
+                    return
+            except requests.RequestException:
+                pass
+            time.sleep(0.5)
+        raise RuntimeError("mihomo did not become ready")
 
     def stop(self) -> None:
         if self.process is not None:

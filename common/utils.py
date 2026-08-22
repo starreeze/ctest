@@ -1,3 +1,4 @@
+import base64
 import re
 
 import yaml
@@ -13,23 +14,9 @@ class ClashDumper(yaml.SafeDumper):
     pass
 
 
-_AMBIGUOUS_STR = re.compile(
-    r"^(?:y|Y|yes|Yes|YES|n|N|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF|null|Null|NULL|~)$"
-)
-
-
 def _represent_str(dumper: yaml.Dumper, data: str) -> yaml.Node:
-    needs_quote = (
-        not data
-        or data != data.strip()
-        or _AMBIGUOUS_STR.match(data)
-        or any(c in data for c in ":{}[],&*!#|>'\"%@`\n\t")
-        or data[0] in "-?"
-    )
-    style = ""
-    if needs_quote:
-        # Single quotes keep emoji/unicode intact; yaml-cpp may not accept \U escapes.
-        style = "'" if "'" not in data else '"'
+    # Always quote: unquoted hex like 8e45 is a YAML 1.1 float and Mihomo then rejects the short-id.
+    style = "'" if "'" not in data else '"'
     return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
 
 
@@ -51,6 +38,68 @@ def quote_ipv6_server_addresses(yaml_content: str) -> str:
         return match.group(0)
 
     return re.sub(r"(server:)\s+([0-9a-fA-F:]+)", replacer, yaml_content)
+
+
+_JSDELIVR_GH = re.compile(
+    r"^https://(?:cdn|fastly|gcore|testing)\.jsdelivr\.net/gh/([^/]+)/([^/@]+)@([^/]+)/(.*)$"
+)
+_RAW_GITHUB_REFS_HEADS = re.compile(
+    r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/refs/heads/([^/]+)/(.*)$"
+)
+_RAW_GITHUB = re.compile(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.*)$")
+
+
+def rewrite_github_feed_url(url: str) -> str:
+    """Send GitHub and jsDelivr feeds through fastly.jsdelivr.net so api.v1.mk can fetch them."""
+    if match := _JSDELIVR_GH.match(url):
+        owner, repo, ref, path = match.groups()
+        return f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{ref}/{path}"
+    if match := _RAW_GITHUB_REFS_HEADS.match(url):
+        owner, repo, branch, path = match.groups()
+        return f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"
+    if match := _RAW_GITHUB.match(url):
+        owner, repo, branch, path = match.groups()
+        return f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"
+    return url
+
+
+_VLESS_X25519_PASSWORD_SIZE = 32
+_VLESS_MLKEM768_CLIENT_LENGTH = 1184
+
+
+def mihomo_accepts_vless_encryption(encryption: str) -> bool:
+    """True if Mihomo NewClient would accept this VLESS encryption field."""
+    if encryption in ("", "none"):
+        return True
+    parts = encryption.split(".")
+    if len(parts) < 4 or parts[0] != "mlkem768x25519plus":
+        return False
+    if parts[1] not in {"native", "xorpub", "random"}:
+        return False
+    if parts[2] not in {"1rtt", "0rtt"}:
+        return False
+    keys = 0
+    for token in parts[3:]:
+        if len(token) < 20:
+            continue
+        pad = "=" * ((4 - len(token) % 4) % 4)
+        try:
+            raw = base64.urlsafe_b64decode(token + pad)
+        except Exception:
+            return False
+        if len(raw) not in (_VLESS_X25519_PASSWORD_SIZE, _VLESS_MLKEM768_CLIENT_LENGTH):
+            return False
+        keys += 1
+    return keys > 0
+
+
+def decode_subconverter_body(raw: bytes) -> tuple[str, int]:
+    """Decode converter YAML. Returns (text, replacement_count). Public backends sometimes emit invalid UTF-8."""
+    try:
+        return raw.decode("utf-8"), 0
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+        return text, text.count("\ufffd")
 
 
 def load_raw_clash_yaml(content: str) -> dict:

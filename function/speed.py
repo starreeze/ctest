@@ -9,6 +9,25 @@ from common.db import ProxyFailureDB
 from common.utils import dump_yaml
 
 
+def should_persist_speed_failures(tested_count: int, abort_count: int) -> bool:
+    """Persist nodes with no successful sample unless adaptive mode looks like a shared-endpoint outage."""
+    if not test_args.test_speed or abort_count == 0:
+        return False
+    if test_args.speed_test_mode != "adaptive":
+        return True
+    if test_args.speed_outage_min_samples <= 0:
+        raise ValueError("speed_outage_min_samples must be positive")
+    if not 0 <= test_args.speed_outage_fail_ratio <= 1:
+        raise ValueError("speed_outage_fail_ratio must be between 0 and 1")
+    if tested_count >= test_args.speed_outage_min_samples and abort_count == tested_count:
+        logger.warning(
+            f"Not persisting {abort_count}/{tested_count} aborted speed test(s): "
+            "failure rate looks like a shared measurement-endpoint outage"
+        )
+        return False
+    return True
+
+
 def replace_name(names: Iterable[str], info: dict[str, tuple[float, int]]) -> list[str]:
     new_names = []
     for name in names:
@@ -89,30 +108,21 @@ def test_latency_speed():
 
     name2ls = get_speed(valid)
 
-    # Record failures for proxies with speed lower than the threshold
-    # This is treated the same as a failed latency test
-    speed_threshold_mbps = config_args.min_speed_threshold_kbps / 1024  # Convert KB/s to MB/s
+    # Record failures for proxies that produced no successful throughput sample.
+    # Completed-but-slow results are left in the profile ranking and are not persisted.
     name_to_proxy = {proxy["name"]: proxy for proxy in config["proxies"]}
-    low_speed_failures = []
+    abort_failures = []
     for proxy_name, (speed, latency) in name2ls.items():
-        if speed < speed_threshold_mbps:
+        if speed == 0:
             if proxy_name in name_to_proxy:
                 proxy_dict = name_to_proxy[proxy_name]
                 server = proxy_dict["server"]
                 port = proxy_dict["port"]
-                low_speed_failures.append((server, port))
-                logger.debug(
-                    f"Will record failure for {proxy_name} ({server}:{port}) due to low speed: {speed:.2f} MiB/s"
-                )
+                abort_failures.append((server, port))
+                logger.debug(f"Will record failure for {proxy_name} ({server}:{port}): no successful speed sample")
 
-    # A shared adaptive endpoint can fail independently of the proxy. Keep its
-    # score for this run, but do not turn it into a persistent proxy failure.
-    if low_speed_failures and test_args.test_speed and test_args.speed_test_mode == "sdk":
-        failure_db.record_failures_batch(low_speed_failures)
-    elif low_speed_failures and test_args.test_speed:
-        logger.warning(
-            f"Not persisting {len(low_speed_failures)} low adaptive-speed result(s) as proxy failures"
-        )
+    if should_persist_speed_failures(len(name2ls), len(abort_failures)):
+        failure_db.record_failures_batch(abort_failures)
 
     replaced_names = replace_name(proxies, name2ls)
     for new_name, proxy in zip(replaced_names, config["proxies"]):
