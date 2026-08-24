@@ -56,6 +56,8 @@ def make_args_module():
         global_group="GLOBAL",
         meta_start_command="mihomo -d profiles",
         min_speed_threshold_kbps=512,
+        discard=True,
+        profile_remote_url_path="urls.txt",
     )
     module.test_args = SimpleNamespace(
         speed_test_mode="sdk",
@@ -365,6 +367,19 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.assertFalse(self.speed.should_persist_speed_failures(10, 0))
         self.args.speed_test_mode = "sdk"
         self.assertTrue(self.speed.should_persist_speed_failures(10, 10))
+
+    def test_keep_hosts_survive_latency_discard(self):
+        timeout = self.args.latency_timeout
+        keep = {"name": f"{timeout} - 0.00 - pin", "server": "10.0.0.1"}
+        drop = {"name": f"{timeout} - 0.00 - other", "server": "10.0.0.2"}
+        ok = {"name": "0100 - 1.50 - fast", "server": "10.0.0.3"}
+        pinned = {"10.0.0.1"}
+        self.assertTrue(self.speed.should_retain_proxy(keep, pinned))
+        self.assertFalse(self.speed.should_retain_proxy(drop, pinned))
+        self.assertTrue(self.speed.should_retain_proxy(ok, pinned))
+        self.args_module.config_args.discard = False
+        self.assertTrue(self.speed.should_retain_proxy(drop, set()))
+        self.args_module.config_args.discard = True
 
 
 if __name__ == "__main__":

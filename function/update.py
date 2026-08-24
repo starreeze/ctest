@@ -10,6 +10,7 @@ import yaml
 
 from common.args import config_args as args
 from common.args import get_newest_profile, logger
+from common.feeds import load_enabled_feeds
 from common.utils import decode_subconverter_body, load_raw_clash_yaml, rewrite_github_feed_url
 
 META_PROXY_TYPES = {"vless", "hysteria", "hysteria2", "tuic", "wireguard", "anytls", "ssh", "mieru"}
@@ -68,15 +69,14 @@ def fetch_converted_profile(feed_urls: list[str], config_url: str) -> str:
 
 def update():
     urls = []
-    with open(args.profile_remote_url_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                line = datetime.strftime(datetime.now(), line)
-                rewritten = rewrite_github_feed_url(line)
-                if rewritten != line:
-                    logger.info(f"Rewrote GitHub feed to jsDelivr: {line} -> {rewritten}")
-                urls.append(rewritten)
+    for url, keep in load_enabled_feeds(args.profile_remote_url_path):
+        url = datetime.strftime(datetime.now(), url)
+        rewritten = rewrite_github_feed_url(url)
+        if rewritten != url:
+            logger.info(f"Rewrote GitHub feed to jsDelivr: {url} -> {rewritten}")
+        if keep:
+            logger.info(f"Pinning keep-feed hosts from {url}")
+        urls.append(rewritten)
     config_url = rewrite_github_feed_url(args.subconvert_config_url)
     content = fetch_converted_profile(urls, config_url)
 

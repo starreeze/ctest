@@ -1,32 +1,33 @@
-https://fastly.jsdelivr.net/gh/starreeze/ctest@main/assets/nodefiltrate.yaml
-# https://fastly.jsdelivr.net/gh/ripaojiedian/freenode@main/clash
-https://fastly.jsdelivr.net/gh/zhangkaiitugithub/passcro@main/speednodes.yaml
-https://fastly.jsdelivr.net/gh/anaer/Sub@main/clash.yaml
-https://fastly.jsdelivr.net/gh/Huibq/TrojanLinks@master/links/vmess
-# https://fastly.jsdelivr.net/gh/mfuu/v2ray@master/clash.yaml
-https://fastly.jsdelivr.net/gh/ermaozi/get_subscribe@main/subscribe/clash.yml
+keep https://raw.githubusercontent.com/starreeze/ctest/main/assets/vultr-deploy.yaml
+https://raw.githubusercontent.com/starreeze/ctest/main/assets/nodefiltrate.yaml
+# https://raw.githubusercontent.com/ripaojiedian/freenode/main/clash
+https://raw.githubusercontent.com/zhangkaiitugithub/passcro/main/speednodes.yaml
+https://raw.githubusercontent.com/anaer/Sub/main/clash.yaml
+https://raw.githubusercontent.com/Huibq/TrojanLinks/master/links/vmess
+# https://raw.githubusercontent.com/mfuu/v2ray/master/clash.yaml
+https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/clash.yml
 # https://tt.vg/freeclash
-https://fastly.jsdelivr.net/gh/free18/v2ray@main/c.yaml
-https://fastly.jsdelivr.net/gh/peasoft/NoMoreWalls@master/list.meta.yml
-https://fastly.jsdelivr.net/gh/Barabama/FreeNodes@main/nodes/yudou66.yaml
-https://fastly.jsdelivr.net/gh/dongchengjie/airport@main/subs/merged/tested_within.yaml
-https://fastly.jsdelivr.net/gh/Barabama/FreeNodes@main/nodes/blues.yaml
-# https://fastly.jsdelivr.net/gh/a2470982985/getNode@main/clash.yaml
-https://fastly.jsdelivr.net/gh/Barabama/FreeNodes@main/nodes/clashmeta.yaml
-https://fastly.jsdelivr.net/gh/Barabama/FreeNodes@main/nodes/ndnode.yaml
-# https://fastly.jsdelivr.net/gh/freefq/free@master/v2
-# https://fastly.jsdelivr.net/gh/aiboboxx/v2rayfree@main/v2
+https://raw.githubusercontent.com/free18/v2ray/main/c.yaml
+https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.meta.yml
+https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/yudou66.yaml
+https://raw.githubusercontent.com/dongchengjie/airport/main/subs/merged/tested_within.yaml
+https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/blues.yaml
+# https://raw.githubusercontent.com/a2470982985/getNode/main/clash.yaml
+https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/clashmeta.yaml
+https://raw.githubusercontent.com/Barabama/FreeNodes/main/nodes/ndnode.yaml
+# https://raw.githubusercontent.com/freefq/free/master/v2
+# https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2
 
-# https://fastly.jsdelivr.net/gh/Jsnzkpg/Jsnzkpg@Jsnzkpg/Jsnzkpg
-# https://fastly.jsdelivr.net/gh/free-nodes/clashfree@main/clash%Y%m%d.yml
+# https://raw.githubusercontent.com/Jsnzkpg/Jsnzkpg/Jsnzkpg/Jsnzkpg
+# https://raw.githubusercontent.com/free-nodes/clashfree/main/clash%Y%m%d.yml
 # https://mm.mibei77.com/%Y/%m.%dClasholr.yaml
 # http://stairnode.cczzuu.top/node/%Y%m%d-clash.yaml
 # https://iwxf.netlify.app/
 # https://jiang.netlify.app/
-# https://fastly.jsdelivr.net/gh/mahdibland/ShadowsocksAggregator@master/Eternity.yml
-# https://fastly.jsdelivr.net/gh/mahdibland/ShadowsocksAggregator@master/EternityAir.yml
-https://fastly.jsdelivr.net/gh/0xRadikal/Free-v2ray-Configs@main/verified/configs_base64.txt
-https://fastly.jsdelivr.net/gh/MatinGhanbari/v2ray-configs@main/subscriptions/v2ray/super-sub.txt
-https://fastly.jsdelivr.net/gh/Au1rxx/free-vpn-subscriptions@main/output/clash.yaml
-https://fastly.jsdelivr.net/gh/awesome-vpn/awesome-vpn@master/clash.yaml
-https://fastly.jsdelivr.net/gh/ALIILAPRO/v2rayNG-Config@main/sub.txt
+# https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.yml
+# https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/EternityAir.yml
+https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs_base64.txt
+https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt
+https://raw.githubusercontent.com/Au1rxx/free-vpn-subscriptions/main/output/clash.yaml
+https://raw.githubusercontent.com/awesome-vpn/awesome-vpn/master/clash.yaml
+https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt

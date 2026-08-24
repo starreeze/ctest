@@ -13,6 +13,7 @@ from collections import defaultdict
 from common.args import config_args as args
 from common.args import get_newest_profile, logger
 from common.db import ProxyFailureDB
+from common.feeds import load_keep_hosts
 from common.utils import dump_yaml, load_raw_clash_yaml, mihomo_accepts_vless_encryption
 
 
@@ -45,6 +46,24 @@ def preprocess_profile(profile: str) -> dict:
         if "obfs" in proxy and "obfs-password" not in proxy:
             proxy["obfs-password"] = "none"
     return in_yaml
+
+
+def apply_failure_filter(
+    proxies: list[dict], filtered_hosts: set[str], keep_hosts: set[str]
+) -> tuple[list[dict], list[str]]:
+    """Drop hosts with too many consecutive failures, except pinned keep-feed hosts."""
+    kept: list[dict] = []
+    dropped_names: list[str] = []
+    for proxy in proxies:
+        host = str(proxy["server"])
+        if host in filtered_hosts and host not in keep_hosts:
+            dropped_names.append(proxy["name"])
+            logger.debug(f"Filtering proxy {proxy['name']} ({host}) due to consecutive failures")
+            continue
+        if host in filtered_hosts:
+            logger.info(f"Keeping pinned proxy {proxy['name']} ({host}) despite failure history")
+        kept.append(proxy)
+    return kept, dropped_names
 
 
 def has_unsupported_field(proxy: dict) -> bool:
@@ -257,20 +276,17 @@ def fix(profile_path: str):
     failure_db = ProxyFailureDB()
     failure_db.cleanup_expired()  # Clean up expired entries first
     filtered_by_failures = failure_db.get_filtered_proxies()
+    keep_hosts = load_keep_hosts(args.profile_remote_url_path)
+    if keep_hosts:
+        logger.info(f"Pinning {len(keep_hosts)} keep-feed host(s): {sorted(keep_hosts)}")
 
     if filtered_by_failures:
         logger.info(f"Filtering {len(filtered_by_failures)} proxies due to consecutive failures")
 
     # Filter proxies based on failure history
-    failure_filtered_names = []
-    proxies_after_failure_filter = []
-    for proxy in original_proxies:
-        host = str(proxy["server"])
-        if host in filtered_by_failures:
-            failure_filtered_names.append(proxy["name"])
-            logger.debug(f"Filtering proxy {proxy['name']} ({host}) due to consecutive failures")
-        else:
-            proxies_after_failure_filter.append(proxy)
+    proxies_after_failure_filter, failure_filtered_names = apply_failure_filter(
+        original_proxies, filtered_by_failures, keep_hosts
+    )
 
     if failure_filtered_names:
         logger.info(f"Removed {len(failure_filtered_names)} proxies due to failure history")

@@ -52,6 +52,19 @@ class HostIdentityTests(unittest.TestCase):
         sys.modules.pop("common.db", None)
         cls.args_patch.stop()
 
+    def test_failure_filter_skips_keep_hosts(self):
+        kept, dropped = self.fix.apply_failure_filter(
+            [
+                proxy("pin", "1.1.1.1", 443),
+                proxy("fail", "2.2.2.2", 443),
+                proxy("ok", "3.3.3.3", 443),
+            ],
+            {"1.1.1.1", "2.2.2.2"},
+            {"1.1.1.1"},
+        )
+        self.assertEqual([p["name"] for p in kept], ["pin", "ok"])
+        self.assertEqual(dropped, ["fail"])
+
     def test_dedup_keeps_first_proxy_per_host(self):
         kept, host_to_name, skipped = self.fix.handle_redundant_and_conflicts(
             [

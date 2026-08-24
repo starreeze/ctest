@@ -33,6 +33,20 @@ class GithubFeedRewriteTest(unittest.TestCase):
             f"https://fastly.jsdelivr.net/{path}",
         )
 
+    def test_github_blob_and_raw_pages(self):
+        self.assertEqual(
+            rewrite_github_feed_url(
+                "https://github.com/starreeze/ctest/blob/main/assets/vultr-deploy.yaml"
+            ),
+            "https://fastly.jsdelivr.net/gh/starreeze/ctest@main/assets/vultr-deploy.yaml",
+        )
+        self.assertEqual(
+            rewrite_github_feed_url(
+                "https://github.com/starreeze/ctest/raw/refs/heads/main/assets/nodefiltrate.yaml"
+            ),
+            "https://fastly.jsdelivr.net/gh/starreeze/ctest@main/assets/nodefiltrate.yaml",
+        )
+
     def test_non_github_urls_unchanged(self):
         self.assertEqual(rewrite_github_feed_url("https://tt.vg/freeclash"), "https://tt.vg/freeclash")
         self.assertEqual(

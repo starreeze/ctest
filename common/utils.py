@@ -47,20 +47,26 @@ _RAW_GITHUB_REFS_HEADS = re.compile(
     r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/refs/heads/([^/]+)/(.*)$"
 )
 _RAW_GITHUB = re.compile(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.*)$")
+_GITHUB_BLOB_OR_RAW = re.compile(
+    r"^https://github\.com/([^/]+)/([^/]+)/(?:blob|raw)/(?:refs/heads/)?([^/]+)/(.*)$"
+)
+
+
+def github_feed_parts(url: str) -> tuple[str, str, str, str] | None:
+    """Return (owner, repo, ref, path) for GitHub or jsDelivr gh/ feed URLs."""
+    for pattern in (_JSDELIVR_GH, _RAW_GITHUB_REFS_HEADS, _GITHUB_BLOB_OR_RAW, _RAW_GITHUB):
+        if match := pattern.match(url):
+            return match.groups()
+    return None
 
 
 def rewrite_github_feed_url(url: str) -> str:
     """Send GitHub and jsDelivr feeds through fastly.jsdelivr.net so api.v1.mk can fetch them."""
-    if match := _JSDELIVR_GH.match(url):
-        owner, repo, ref, path = match.groups()
-        return f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{ref}/{path}"
-    if match := _RAW_GITHUB_REFS_HEADS.match(url):
-        owner, repo, branch, path = match.groups()
-        return f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"
-    if match := _RAW_GITHUB.match(url):
-        owner, repo, branch, path = match.groups()
-        return f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"
-    return url
+    parts = github_feed_parts(url)
+    if parts is None:
+        return url
+    owner, repo, ref, path = parts
+    return f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{ref}/{path}"
 
 
 _VLESS_X25519_PASSWORD_SIZE = 32

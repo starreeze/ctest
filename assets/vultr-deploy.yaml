@@ -1,0 +1,32 @@
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: info
+ipv6: true
+tcp-concurrent: true
+
+proxies:
+  - name: vless-reality
+    type: vless
+    server: "104.156.252.113"
+    port: 443
+    uuid: "59cad7e9-51de-4cfe-a3ec-d0982b769779"
+    network: tcp
+    udp: true
+    tls: true
+    servername: "www.dell.com"
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: "gSXJoXSKQqv2plw98INkoL_Gbh0cbnFvjhkVy7tXzRk"
+      short-id: "8304b92ac064a1f6"
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - vless-reality
+
+rules:
+  - MATCH,PROXY

@@ -6,6 +6,7 @@ import yaml
 from common.api import get_latency, get_speed
 from common.args import apply_runtime_proxy_env, config_args, get_newest_profile, logger, test_args
 from common.db import ProxyFailureDB
+from common.feeds import load_keep_hosts
 from common.utils import dump_yaml
 
 
@@ -42,6 +43,15 @@ def replace_name(names: Iterable[str], info: dict[str, tuple[float, int]]) -> li
 def sl_from_name(name: str) -> tuple[float, int]:
     latency, speed = name.split(" - ")[0:2]
     return -float(speed), int(latency)
+
+
+def should_retain_proxy(proxy: dict, keep_hosts: set[str]) -> bool:
+    """Keep latency-valid nodes, plus hosts from keep-marked feeds even when tests fail."""
+    if str(proxy["server"]) in keep_hosts:
+        return True
+    if not config_args.discard:
+        return True
+    return sl_from_name(proxy["name"])[1] < test_args.latency_timeout
 
 
 def convert_to_str(config: dict) -> dict:
@@ -88,6 +98,9 @@ def test_latency_speed():
 
     logger.info(f"Total: got {len(all_valid)} / {len(proxies)} valid proxies across all groups.")
     valid = list(sorted(all_valid.items(), key=lambda x: x[1]))
+    keep_hosts = load_keep_hosts(config_args.profile_remote_url_path)
+    if keep_hosts:
+        logger.info(f"Pinning {len(keep_hosts)} keep-feed host(s) after tests")
 
     # Update failure database - collect all failures first, then batch update
     failure_db = ProxyFailureDB()
@@ -95,6 +108,8 @@ def test_latency_speed():
     for proxy_dict in config["proxies"]:
         proxy_name = proxy_dict["name"]
         host = str(proxy_dict["server"])
+        if host in keep_hosts:
+            continue
 
         # Check if this proxy failed (not in valid results)
         if proxy_name not in all_valid:
@@ -116,6 +131,8 @@ def test_latency_speed():
             if proxy_name in name_to_proxy:
                 proxy_dict = name_to_proxy[proxy_name]
                 host = str(proxy_dict["server"])
+                if host in keep_hosts:
+                    continue
                 abort_failures.append(host)
                 logger.debug(f"Will record failure for {proxy_name} ({host}): no successful speed sample")
 
@@ -125,15 +142,9 @@ def test_latency_speed():
     replaced_names = replace_name(proxies, name2ls)
     for new_name, proxy in zip(replaced_names, config["proxies"]):
         proxy["name"] = new_name
-    if config_args.discard:  # filter out latency >= timeout
-        config["proxies"] = filter(
-            lambda x: sl_from_name(x["name"])[1] < test_args.latency_timeout, config["proxies"]
-        )
+    config["proxies"] = [proxy for proxy in config["proxies"] if should_retain_proxy(proxy, keep_hosts)]
     config["proxies"] = sorted(config["proxies"], key=lambda x: sl_from_name(x["name"]))
-
-    if config_args.discard:
-        replaced_names = filter(lambda x: sl_from_name(x)[1] < test_args.latency_timeout, replaced_names)
-    replaced_names = sorted(replaced_names, key=sl_from_name)
+    replaced_names = [proxy["name"] for proxy in config["proxies"]]
     new_groups = []
     for start, group in zip(test_args.group_proxy_start, config["proxy-groups"]):
         if start == -1:
