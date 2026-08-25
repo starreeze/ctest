@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
-from math import ceil, floor
+from math import ceil, floor, isfinite
 from typing import cast
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -88,8 +88,8 @@ def validate_adaptive_speed_config() -> list[int]:
         raise ValueError("adaptive speed timeouts must be positive")
     if test_args.speed_http_connect_overhead < 0:
         raise ValueError("speed_http_connect_overhead cannot be negative")
-    if config_args.min_speed_threshold_kbps < 0:
-        raise ValueError("min_speed_threshold_kbps cannot be negative")
+    if test_args.speed_http_deadline_rate_kibps < 0:
+        raise ValueError("speed_http_deadline_rate_kibps cannot be negative")
     if test_args.speed_http_chunk_size_kb <= 0:
         raise ValueError("speed_http_chunk_size_kb must be positive")
     if not 0 < test_args.speed_http_ramp_fail_factor <= 1:
@@ -101,9 +101,9 @@ def probe_time_limit_seconds(size_bytes: int) -> float:
     """Return a bounded wall-clock budget, optionally tightened by the configured speed floor."""
     if size_bytes <= 0:
         raise ValueError("probe size must be positive")
-    if config_args.min_speed_threshold_kbps == 0:
+    if test_args.speed_http_deadline_rate_kibps == 0:
         return test_args.speed_http_max_transfer_seconds
-    rate_bytes = config_args.min_speed_threshold_kbps * 1024
+    rate_bytes = test_args.speed_http_deadline_rate_kibps * 1024
     return min(
         test_args.speed_http_connect_overhead + size_bytes / rate_bytes,
         test_args.speed_http_max_transfer_seconds,
@@ -240,7 +240,7 @@ def try_download_sample(size_bytes: int) -> DownloadSample | None:
     return sample
 
 
-def adaptive_download_speed() -> float:
+def adaptive_download_speed() -> float | None:
     """Return availability-weighted lower-percentile goodput in MiB/s."""
     sizes = validate_adaptive_speed_config()
     selected_size = sizes[0]
@@ -274,7 +274,7 @@ def adaptive_download_speed() -> float:
 
     successful = [sample for sample in selected_samples if sample is not None]
     if not successful:
-        return 0.0
+        return None
 
     availability = len(successful) / len(selected_samples)
     lower_goodput = percentile(
@@ -295,21 +295,21 @@ def adaptive_download_speed() -> float:
 
 
 @func_set_timeout(test_args.speedtest_call_timeout)
-def call_adaptive_speedtest() -> float:
+def call_adaptive_speedtest() -> float | None:
     return adaptive_download_speed()
 
 
-def test_download_adaptive() -> float:
+def test_download_adaptive() -> float | None:
     try:
         return call_adaptive_speedtest()
     except KeyboardInterrupt:
         raise
     except FunctionTimedOut:
         logger.warning("Adaptive speed test exceeded the total call timeout")
-        return 0.0
+        return None
     except Exception as e:
         logger.warning(f"Adaptive speed test failed: {e}")
-        return 0.0
+        return None
 
 
 @retry_dec(test_args.speed_test_retry)
@@ -319,14 +319,14 @@ def call_speedtest() -> float:
     return st.download()
 
 
-def test_download_speedtest() -> float:
+def test_download_speedtest() -> float | None:
     try:
         bps = call_speedtest()
     except KeyboardInterrupt as e:
         raise e
     except BaseException as e:
         logger.warning(f"Error during speedtest: {e}")
-        return 0
+        return None
     mib_per_second = cast(float, bps) / (MEBIBYTE * 8)
     return mib_per_second
 
@@ -353,11 +353,11 @@ def select_proxy(name: str, group: str) -> bool:
     return True
 
 
-def test_speed_single(name: str):
+def test_speed_single(name: str) -> float | None:
     if not select_proxy(name, config_args.global_group):
-        return 0.0
+        raise RuntimeError(f"Failed to select proxy {name} on {config_args.global_group}")
     if not select_proxy(name, config_args.target_group):
-        return 0.0
+        raise RuntimeError(f"Failed to select proxy {name} on {config_args.target_group}")
     if test_args.speed_test_mode == "sdk":
         return test_download_speedtest()
     if test_args.speed_test_mode == "adaptive":
@@ -404,12 +404,17 @@ def get_latency(proxies: list[str], group_name: str) -> dict[str, int]:
 
 def get_speed(
     latencies: list[tuple[str, int]], name_to_host: dict[str, str]
-) -> dict[str, tuple[float, int]]:
-    """Return the first positive-throughput endpoint per host, tried by latency."""
+) -> tuple[dict[str, tuple[float | None, int]], set[str]]:
+    """Return retained endpoints and hosts whose speed outcome avoids cooldown."""
+    retain_min = test_args.speed_retain_min_mibps
+    avoid_cooldown_min = test_args.speed_avoid_cooldown_min_mibps
+    if not all(isfinite(value) and value >= 0 for value in (retain_min, avoid_cooldown_min)):
+        raise ValueError("speed thresholds must be finite and non-negative")
     candidates: dict[str, list[tuple[str, int]]] = {}
     for name, latency in sorted(latencies, key=lambda item: item[1]):
         candidates.setdefault(name_to_host[name], []).append((name, latency))
-    speed_latency: dict[str, tuple[float, int]] = {}
+    speed_latency: dict[str, tuple[float | None, int]] = {}
+    cooldown_avoided_hosts: set[str] = set()
     previous_mode: str | None = None
     if test_args.test_speed:
         previous_mode = get_core_mode()
@@ -423,11 +428,21 @@ def get_speed(
             for name, latency in endpoints:
                 if test_args.test_speed:
                     speed = test_speed_single(name)
+                    if speed is None:
+                        logger.info(f"Speed for {name}: N/A")
+                        speed_latency[name] = (None, latency)
+                        cooldown_avoided_hosts.add(host)
+                        break
+                    if not isfinite(speed) or speed < 0:
+                        raise ValueError(f"Speed for {name} must be finite and non-negative")
                     logger.info(f"Speed for {name}: {speed:.2f} MiB/s")
-                    if speed <= 0:
+                    if speed >= avoid_cooldown_min:
+                        cooldown_avoided_hosts.add(host)
+                    if speed < retain_min:
                         continue
                 else:
-                    speed = 0.0
+                    speed = None
+                    cooldown_avoided_hosts.add(host)
                 speed_latency[name] = (speed, latency)
                 break
     except KeyboardInterrupt:
@@ -435,7 +450,7 @@ def get_speed(
     finally:
         if previous_mode is not None and previous_mode != "global":
             set_core_mode(previous_mode)
-    return speed_latency
+    return speed_latency, cooldown_avoided_hosts
 
 
 @retry_dec(test_args.test_latency_retry)

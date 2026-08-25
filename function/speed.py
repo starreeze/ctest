@@ -2,6 +2,7 @@
 import re
 import time
 from collections import defaultdict
+from math import isfinite
 
 import yaml
 
@@ -20,7 +21,7 @@ BUILTIN_POLICIES = {
     "GLOBAL",
     "COMPATIBLE",
 }
-MEASUREMENT_PREFIX = re.compile(r"^\d{4,} - \d+(?:\.\d+)? - ")
+MEASUREMENT_PREFIX = re.compile(r"^\d{4,} - (?:N/A|\d+(?:\.\d+)?) - ")
 
 
 def should_persist_speed_failures(tested_count: int, failure_count: int) -> bool:
@@ -50,13 +51,15 @@ def original_name(name: str) -> str:
     return MEASUREMENT_PREFIX.sub("", name, count=1)
 
 
-def measured_name(name: str, speed: float, latency: int) -> str:
-    return f"{latency:04d} - {speed:.2f} - {original_name(name)}"
+def measured_name(name: str, speed: float | None, latency: int) -> str:
+    speed_label = "N/A" if speed is None else f"{speed:.2f}"
+    return f"{latency:04d} - {speed_label} - {original_name(name)}"
 
 
-def score_from_name(name: str) -> tuple[float, int]:
+def score_from_name(name: str) -> tuple[bool, float, int]:
     latency, speed = name.split(" - ", 2)[:2]
-    return -float(speed), int(latency)
+    numeric_speed = None if speed == "N/A" else float(speed)
+    return numeric_speed is None, -(numeric_speed or 0.0), int(latency)
 
 
 def convert_to_str(config: dict) -> dict:
@@ -72,7 +75,12 @@ def generated_test_group(name: str) -> bool:
     return bool(re.fullmatch(rf"{re.escape(config_args.target_group)} Group [1-9]\d*", name))
 
 
-def rebuild_proxy_groups(config: dict, old_proxy_names: set[str], final_names: list[str]) -> None:
+def rebuild_proxy_groups(
+    config: dict,
+    old_proxy_names: set[str],
+    final_names: list[str],
+    final_speeds: dict[str, float | None],
+) -> None:
     """Remove test groups and replace node references without relying on group positions."""
     groups = [
         group
@@ -84,9 +92,18 @@ def rebuild_proxy_groups(config: dict, old_proxy_names: set[str], final_names: l
         raise ValueError("Duplicate proxy-group names after removing test groups")
     if len(final_names) != len(set(final_names)):
         raise ValueError("Duplicate final proxy names")
+    if set(final_speeds) != set(final_names):
+        raise ValueError("Final speed metadata does not match final proxy names")
 
+    if not isfinite(test_args.speed_load_balance_min_mibps) or test_args.speed_load_balance_min_mibps < 0:
+        raise ValueError("speed_load_balance_min_mibps must be finite and non-negative")
+    if any(speed is not None and (not isfinite(speed) or speed < 0) for speed in final_speeds.values()):
+        raise ValueError("Final speed metadata must be finite and non-negative")
     fast_names = [
-        name for name in final_names if float(name.split(" - ", 2)[1]) >= test_args.load_balance_thres
+        name
+        for name in final_names
+        if (speed := final_speeds[name]) is not None
+        and speed >= test_args.speed_load_balance_min_mibps
     ]
     for group in groups:
         refs = [str(ref) for ref in group.get("proxies", [])]
@@ -95,7 +112,7 @@ def rebuild_proxy_groups(config: dict, old_proxy_names: set[str], final_names: l
             continue
         static_refs = [ref for ref in refs if ref not in old_proxy_names or ref in group_names]
         if group.get("type") == "load-balance":
-            replacements = fast_names or final_names[:1]
+            replacements = fast_names
             group["strategy"] = config_args.load_balance_strategy
             group.pop("tolerance", None)
         else:
@@ -118,7 +135,7 @@ def rebuild_proxy_groups(config: dict, old_proxy_names: set[str], final_names: l
 def choose_keep_fallbacks(
     proxies: list[dict],
     all_valid: dict[str, int],
-    selected: dict[str, tuple[float, int]],
+    selected: dict[str, tuple[float | None, int]],
     keep_hosts: set[str],
 ) -> None:
     """Pinned hosts always retain one endpoint, preferring a latency-valid candidate."""
@@ -136,7 +153,7 @@ def choose_keep_fallbacks(
             continue
         candidates.sort(key=lambda proxy: all_valid.get(str(proxy["name"]), test_args.latency_timeout))
         name = str(candidates[0]["name"])
-        selected[name] = (0.0, all_valid.get(name, test_args.latency_timeout))
+        selected[name] = (None, all_valid.get(name, test_args.latency_timeout))
 
 
 def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
@@ -168,15 +185,22 @@ def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
     logger.info(f"Latency total: {len(all_valid)}/{len(proxies)} candidates passed")
 
     valid = sorted(all_valid.items(), key=lambda item: item[1])
-    selected = get_speed(valid, name_to_host)
+    selected, cooldown_avoided_hosts = get_speed(valid, name_to_host)
     keep_hosts = load_keep_hosts(config_args.profile_remote_url_path)
     choose_keep_fallbacks(proxies, all_valid, selected, keep_hosts)
 
     all_hosts = {str(proxy["server"]) for proxy in proxies} - keep_hosts
     latency_hosts = {name_to_host[name] for name in all_valid} - keep_hosts
-    success_hosts = {name_to_host[name] for name in selected} - keep_hosts
+    retained_hosts = {name_to_host[name] for name in selected} - keep_hosts
+    success_hosts = cooldown_avoided_hosts - keep_hosts
     latency_failed_hosts = all_hosts - latency_hosts
+    speed_not_retained_hosts = latency_hosts - retained_hosts if test_args.test_speed else set()
     speed_failed_hosts = latency_hosts - success_hosts if test_args.test_speed else set()
+    na_hosts = {
+        name_to_host[name]
+        for name, (speed, _) in selected.items()
+        if speed is None and name_to_host[name] not in keep_hosts
+    }
 
     failure_db = ProxyFailureDB()
     failure_db.record_successes_batch(sorted(success_hosts))
@@ -188,28 +212,35 @@ def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
         now=failure_cooldown_anchor,
     )
     logger.info(
-        f"Host outcomes: {len(success_hosts)} passed, {len(latency_failed_hosts)} failed latency, "
-        f"{len(speed_failed_hosts)} failed speed, {len(keep_hosts)} pinned"
+        f"Host outcomes: {len(retained_hosts)} retained ({len(na_hosts)} speed N/A), "
+        f"{len(success_hosts)} avoided cooldown, {len(latency_failed_hosts)} failed latency, "
+        f"{len(speed_not_retained_hosts)} below retain threshold, "
+        f"{len(speed_failed_hosts)} entered cooldown, {len(keep_hosts)} pinned"
     )
 
     final_proxies: list[dict] = []
+    final_speeds: dict[str, float | None] = {}
     for old_name, (speed, latency) in selected.items():
         proxy = name_to_proxy[old_name]
         proxy["name"] = measured_name(old_name, speed, latency)
+        final_speeds[str(proxy["name"])] = speed
         final_proxies.append(proxy)
     final_proxies.sort(key=lambda proxy: score_from_name(str(proxy["name"])))
     config["proxies"] = final_proxies
     final_names = [str(proxy["name"]) for proxy in final_proxies]
-    rebuild_proxy_groups(config, old_proxy_names, final_names)
+    rebuild_proxy_groups(config, old_proxy_names, final_names, final_speeds)
 
     with open(profile_path, "w", encoding="utf-8") as profile_file:
         profile_file.write(dump_yaml(config))
     return {
         "input_candidates": len(proxies),
         "latency_passed": len(all_valid),
-        "hosts_passed": len(success_hosts),
+        "hosts_passed": len(retained_hosts),
+        "hosts_avoided_cooldown": len(success_hosts),
         "hosts_failed_latency": len(latency_failed_hosts),
         "hosts_failed_speed": len(speed_failed_hosts),
+        "hosts_speed_na": len(na_hosts),
+        "hosts_not_retained_speed": len(speed_not_retained_hosts),
         "pinned_hosts": len(keep_hosts),
         "preserved_proxies": len(final_proxies),
     }

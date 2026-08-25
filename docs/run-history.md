@@ -10,7 +10,7 @@ The full `main.py` pipeline and direct `python -m function.fix` / `python -m fun
 - terminal `success` or `failed` status and, for failures, the exception type and message;
 - the selected profile path and metrics for each completed stage.
 
-Stage metrics preserve the major funnel counts: merged proxies; unsupported, cooldown, redundant, and Mihomo-rejected removals; latency passes; host outcomes; and final proxies. If a run fails, only stages completed before the error appear. The failed record is appended before the exception is re-raised.
+Stage metrics preserve the major funnel counts: merged proxies; unsupported, cooldown, redundant, and Mihomo-rejected removals; latency passes; speed `N/A` and below-retention host outcomes; cooldown outcomes; and final proxies. If a run fails, only stages completed before the error appear. The failed record is appended before the exception is re-raised.
 
 Use `--run_origin cron` or `--run_origin manual` when a wrapper or scheduler hides the relevant process ancestry. `--run_origin auto` is the default.
 

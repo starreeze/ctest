@@ -41,6 +41,10 @@ class Config:
         default="https://fastly.jsdelivr.net/gh/starreeze/blogimage@main/subconverter/external.ini"
     )
     subconvert_timeout: int = field(default=180, metadata={"help": "timeout in seconds for subconverter requests"})
+    subconvert_attempts: int = field(
+        default=3,
+        metadata={"help": "total attempts per subconverter backend before trying the next backend"},
+    )
     subconvert_user_agent: str = field(default="clash-meta/1.19.30")
     target_group: str = field(default="🔰 节点选择")
     max_proxies_per_group: int = field(
@@ -65,12 +69,6 @@ class Config:
     failure_cooldown_head_start_hours: int = field(
         default=1,
         metadata={"help": "hours subtracted from each positive host cooldown tier"},
-    )
-    min_speed_threshold_kbps: int = field(
-        default=0,
-        metadata={
-            "help": "minimum adaptive speed in KiB/s used for size-based probe deadlines; 0 disables the floor"
-        },
     )
     load_balance_strategy: str = field(
         default="round-robin", metadata={"help": "strategy for load-balance proxy groups"}
@@ -138,7 +136,13 @@ class TestArgs:
     speed_http_max_transfer_seconds: float = field(
         default=30.0,
         metadata={
-            "help": "adaptive probe wall-time cap; also the full budget when min_speed_threshold_kbps is 0"
+            "help": "adaptive probe wall-time cap; also the full budget when speed_http_deadline_rate_kibps is 0"
+        },
+    )
+    speed_http_deadline_rate_kibps: int = field(
+        default=0,
+        metadata={
+            "help": "KiB/s rate used only to tighten adaptive probe deadlines; 0 uses the full wall-time cap"
         },
     )
     speed_http_chunk_size_kb: int = field(default=64)
@@ -156,8 +160,17 @@ class TestArgs:
             "help": "adaptive low-speed fraction that skips failure-DB writes because the shared endpoint looks down"
         },
     )
-    load_balance_thres: float = field(
-        default=1.0, metadata={"help": "minimum MiB/s score to count as a valid speed-test success / load-balance member"}
+    speed_retain_min_mibps: float = field(
+        default=0.0,
+        metadata={"help": "inclusive numeric MiB/s threshold for retaining a latency-valid proxy"},
+    )
+    speed_avoid_cooldown_min_mibps: float = field(
+        default=0.0,
+        metadata={"help": "inclusive numeric MiB/s threshold that prevents a host cooldown"},
+    )
+    speed_load_balance_min_mibps: float = field(
+        default=1.0,
+        metadata={"help": "inclusive numeric MiB/s threshold for load-balance membership"},
     )
     update_profile: bool = field(
         default=True, metadata={"help": "update profile before running tests in main"}

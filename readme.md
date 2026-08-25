@@ -26,7 +26,7 @@ You can also modify more arguments there. -->
 python main.py
 ```
 
-It will by default **overwrite** your latest profile using links specified in urls.txt. Keep `urls.txt` in raw GitHub form; GitHub raw, `github.com/.../blob|raw/`, and `cdn.jsdelivr.net` feeds are rewritten to `fastly.jsdelivr.net` before conversion so `api.v1.mk` can fetch them. Prefix a line with `!` to pin that feed's hosts: they are still tested, but they are not dropped for consecutive failures or a latency timeout. Conversion backends are tried in order (`api.v1.mk`, then bianyuan) until a valid clash YAML is returned; HTML/error pages are never written. Bianyuan is the legacy fallback and may drop VLESS/hy2/TUIC. Since some of the naming conventions are not recognized by clash meta, automatic fix will be done.
+It will by default **overwrite** your latest profile using links specified in urls.txt. Keep `urls.txt` in raw GitHub form; GitHub raw, `github.com/.../blob|raw/`, and `cdn.jsdelivr.net` feeds are rewritten to `fastly.jsdelivr.net` before conversion so `api.v1.mk` can fetch them. Prefix a line with `!` to pin that feed's hosts: they are still tested, but they are not dropped for consecutive failures or a latency timeout. Conversion backends are tried in order (`api.v1.mk`, then bianyuan) until a valid clash YAML is returned; each backend gets `--subconvert_attempts 3` attempts by default before fallback, including responses that are invalid or omit Mihomo protocol types. HTML/error pages are never written. Bianyuan is the legacy fallback and may drop VLESS/hy2/TUIC. Since some of the naming conventions are not recognized by clash meta, automatic fix will be done.
 
 You need to manually reactivate your profile before pressing ENTER to run latency test (unless `--mode meta`). Speed test is enabled by default; pass `--test_speed False` to skip it.
 
@@ -46,7 +46,7 @@ After completion, reactivate your clash profile.
 
 ### Speed test
 
-The speed test script latency-tests every host:port candidate. For each host it throughput-tests survivors in latency order and stops at the first endpoint with positive traffic, then adds latency and speed information to that winning endpoint's name.
+The speed test script latency-tests every host:port candidate. For each host it throughput-tests survivors in latency order and stops at the first `N/A` result or numeric score meeting the retention threshold, then adds latency and speed information to that endpoint's name.
 
 Make sure that your clash profile is constructed by [subconverter](https://github.com/tindy2013/subconverter) which uses the [external config](https://github.com/tindy2013/subconverter/blob/master/README-cn.md#%E8%B0%83%E7%94%A8%E8%AF%B4%E6%98%8E-%E8%BF%9B%E9%98%B6) from https://fastly.jsdelivr.net/gh/starreeze/blogimage@main/subconverter/external.ini. You may also need to check the external controller port and the proxy mixed port in your clash settings. You can either modify the `args.py` or modify the settings upon difference.
 
@@ -64,7 +64,7 @@ Speed test defaults to `--speed_test_mode adaptive` (HTTPS download through the 
 python -m function.speed --speed_test_mode sdk
 ```
 
-Adaptive mode uses `https://speed.cloudflare.com/__down?bytes={bytes}` by default. It ramps through 1, 4, 8, and 16 MiB probes until the response body takes at least three seconds, then collects two measurements at that size. Connection setup/TTFB is logged separately from body goodput. There is no minimum-speed floor by default: `--min_speed_threshold_kbps 0` gives every probe the bounded `--speed_http_max_transfer_seconds` wall-clock budget (default 30 s). Setting a positive floor restores size-based budgets of `--speed_http_connect_overhead + size / floor`, capped by the same maximum; for example, `--min_speed_threshold_kbps 512` produces **7 / 13 / 21 / 30 s** budgets for the default sizes. The stored score is:
+Adaptive mode uses `https://speed.cloudflare.com/__down?bytes={bytes}` by default. It ramps through 1, 4, 8, and 16 MiB probes until the response body takes at least three seconds, then collects two measurements at that size. Connection setup/TTFB is logged separately from body goodput. `--speed_http_deadline_rate_kibps 0` gives every probe the bounded `--speed_http_max_transfer_seconds` wall-clock budget (default 30 s). A positive deadline rate tightens the budget to `--speed_http_connect_overhead + size / rate`, capped by the same maximum; for example, `--speed_http_deadline_rate_kibps 512` produces **7 / 13 / 21 / 30 s** budgets for the default sizes. This setting controls time only and is not an acceptance threshold. The stored score is:
 
 ```text
 successful trial fraction * p25(successful body goodput in MiB/s)
@@ -78,7 +78,13 @@ During throughput tests the core is switched to `global` mode and the node is se
 
 In meta mode, the test core uses a temporary copy of the profile. Only the configured HTTP proxy and controller are bound on localhost; SOCKS, DNS, TUN, redirection, and transparent-proxy listeners are disabled so the test cannot claim unrelated local ports. Deprecated DNS `fallback-filter.geosite` routing is migrated to `nameserver-policy` while preserving the same fallback resolvers.
 
-Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward until one produces positive traffic; that winner represents the host in the final profile. Failed hosts use a 0/23/71/167-hour cooldown sequence, keyed by host: the first failure is retained but does not delay the next attempt, while the fourth and later failures remain capped at 167 hours. Any later success clears the streak. Cooldowns are anchored to the run start rather than the later result-write time; `--failure_cooldown_head_start_hours` defaults to one and is subtracted from each positive tier so a daily cron invocation can retry an expired host. In adaptive mode, speed-derived failure writes are skipped when the configured failure ratio indicates that the shared measurement endpoint itself is likely down.
+Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward. Testing stops at the first `N/A` measurement or numeric score greater than or equal to `--speed_retain_min_mibps`. `N/A` means latency worked but the configured throughput endpoint did not produce a measurement; it is always retained, always avoids cooldown, and is never placed in a load-balance group. Numeric scores use three independent inclusive thresholds:
+
+- `--speed_retain_min_mibps` (default `0`) controls profile retention.
+- `--speed_avoid_cooldown_min_mibps` (default `0`) prevents a host from entering the failure cooldown even when no endpoint meets the retain threshold.
+- `--speed_load_balance_min_mibps` (default `1`) controls load-balance membership; `N/A` never qualifies even when this threshold is zero.
+
+Failed hosts use a 0/23/71/167-hour cooldown sequence, keyed by host: the first failure is retained but does not delay the next attempt, while the fourth and later failures remain capped at 167 hours. Any qualifying result clears the streak. Cooldowns are anchored to the run start rather than the later result-write time; `--failure_cooldown_head_start_hours` defaults to one and is subtracted from each positive tier so a daily cron invocation can retry an expired host. In adaptive mode, speed-derived failure writes are skipped when the configured failure ratio indicates that the shared measurement endpoint itself is likely down.
 
 `--speed_test_url` must use HTTPS. One HTTPS redirect is followed; an HTTP hop or a second redirect fails the probe. Requests send `Referer` set to the URL origin so Cloudflare `__down` accepts 16 MiB probes. The URL may contain a `{bytes}` placeholder, or point to a fixed object on a server that supports byte ranges. Prefer an endpoint you operate if repeatability matters; public endpoints add server and peering variability.
 
@@ -94,9 +100,12 @@ The main adaptive controls are:
 --speed_http_connect_overhead 5
 --speed_http_max_transfer_seconds 30
 --speed_http_read_timeout 30
---min_speed_threshold_kbps 0
+--speed_http_deadline_rate_kibps 0
 --speed_http_ramp_fail_factor 0.85
 --speed_outage_min_samples 5
+--speed_retain_min_mibps 0
+--speed_avoid_cooldown_min_mibps 0
+--speed_load_balance_min_mibps 1
 ```
 
 ## License

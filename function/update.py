@@ -4,6 +4,7 @@
 
 import os
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import requests
 import yaml
@@ -31,41 +32,54 @@ def log_proxy_inventory(proxies: list[dict], label: str) -> None:
 
 
 def fetch_converted_profile(feed_urls: list[str], config_url: str) -> str:
-    last_error: Exception | None = None
+    if args.subconvert_attempts < 1:
+        raise ValueError("subconvert_attempts must be at least 1")
     fallback_content: str | None = None
     merged = "|".join(feed_urls)
     for base_url in args.subconvert_base_urls:
-        logger.info(f"Fetching converted profile from {base_url} ({len(feed_urls)} feeds)")
-        try:
-            response = direct_session.get(
-                base_url,
-                params={"url": merged, "config": config_url, "emoji": "true"},
-                timeout=args.subconvert_timeout,
-                headers={"User-Agent": args.subconvert_user_agent},
+        parsed_url = urlsplit(base_url)
+        backend = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        for attempt in range(1, args.subconvert_attempts + 1):
+            logger.info(
+                f"Fetching converted profile from {backend}, attempt "
+                f"{attempt}/{args.subconvert_attempts} ({len(feed_urls)} feeds)"
             )
-            response.raise_for_status()
-            content, replaced = decode_subconverter_body(response.content)
-            if replaced:
-                logger.warning(
-                    f"Subconverter body is not valid UTF-8; replaced {replaced} invalid sequences"
+            try:
+                response = direct_session.get(
+                    base_url,
+                    params={"url": merged, "config": config_url, "emoji": "true"},
+                    timeout=args.subconvert_timeout,
+                    headers={"User-Agent": args.subconvert_user_agent},
                 )
-            parsed = load_raw_clash_yaml(content)
-            log_proxy_inventory(parsed["proxies"], f"Subconverter {base_url}")
-            types = {str(proxy.get("type")) for proxy in parsed["proxies"]}
-            if types & META_PROXY_TYPES:
-                return content
-            if fallback_content is None:
-                fallback_content = content
-            logger.warning(
-                f"Backend {base_url} omitted Mihomo protocol types; trying next backend"
-            )
-        except (requests.RequestException, ValueError, yaml.YAMLError, UnicodeDecodeError) as e:
-            last_error = e
-            logger.warning(f"Backend {base_url} failed: {e}")
+                response.raise_for_status()
+                content, replaced = decode_subconverter_body(response.content)
+                if replaced:
+                    logger.warning(
+                        f"Subconverter body is not valid UTF-8; replaced {replaced} invalid sequences"
+                    )
+                parsed = load_raw_clash_yaml(content)
+                log_proxy_inventory(parsed["proxies"], f"Subconverter {backend}")
+                types = {str(proxy.get("type")) for proxy in parsed["proxies"]}
+                if types & META_PROXY_TYPES:
+                    return content
+                if fallback_content is None:
+                    fallback_content = content
+                logger.warning(
+                    f"Backend {backend} attempt {attempt}/{args.subconvert_attempts} "
+                    "omitted Mihomo protocol types"
+                )
+            except (requests.RequestException, ValueError, yaml.YAMLError, UnicodeDecodeError) as e:
+                logger.warning(
+                    f"Backend {backend} attempt {attempt}/{args.subconvert_attempts} "
+                    f"failed: {type(e).__name__}"
+                )
+        logger.warning(
+            f"Backend {backend} exhausted {args.subconvert_attempts} attempts; trying next backend"
+        )
     if fallback_content is not None:
         logger.warning("No subconverter backend emitted Mihomo protocol types; using first valid conversion")
         return fallback_content
-    raise RuntimeError(f"All subconvert backends failed, last error: {last_error}") from last_error
+    raise RuntimeError("All subconverter backends failed") from None
 
 
 def update() -> dict:
