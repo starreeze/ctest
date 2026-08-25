@@ -4,6 +4,7 @@
 
 import contextlib
 import fcntl
+import time
 
 from common.args import (
     apply_runtime_proxy_env,
@@ -14,6 +15,7 @@ from common.args import (
     test_args,
 )
 from common.api import MetaLifecycle
+from common.run_history import RunRecorder
 from function.fix import fix
 from function.speed import test_latency_speed
 from function.update import update
@@ -30,24 +32,45 @@ def single_run_lock():
 
 
 def main():
-    with single_run_lock():
-        clear_proxy_env()
-        meta = MetaLifecycle()
-        try:
-            if test_args.update_profile:
-                update()
-                profile_path = get_newest_profile()
-                fix(profile_path)
-                if config_args.mode == "meta":
-                    meta.start(profile_path)
-                else:
-                    input("Please reactivate profile manually and press ENTER to run latency test ...")
-            apply_runtime_proxy_env()
-            test_latency_speed()
-        finally:
-            meta.stop()
+    run_started_at = time.time()
+    run = RunRecorder(config_args.run_history_path, config_args.run_origin)
+    logger.info(
+        f"Profile update run {run.run_id} started "
+        f"(origin={run.origin}, pid={run.pid})"
+    )
+    try:
+        with single_run_lock():
             clear_proxy_env()
-            logger.info("Profile update run finished")
+            meta = MetaLifecycle()
+            try:
+                profile_path = get_newest_profile()
+                run.set_profile(profile_path)
+                if test_args.update_profile:
+                    run.record_stage("update", update())
+                    run.record_stage("fix", fix(profile_path))
+                    if config_args.mode == "meta":
+                        meta.start(profile_path)
+                    else:
+                        input("Please reactivate profile manually and press ENTER to run latency test ...")
+                apply_runtime_proxy_env()
+                run.record_stage(
+                    "speed",
+                    test_latency_speed(failure_cooldown_anchor=run_started_at),
+                )
+            finally:
+                meta.stop()
+                clear_proxy_env()
+    except BaseException as exc:
+        summary = run.finish(exc)
+        logger.error(
+            f"Profile update run {run.run_id} failed after "
+            f"{summary['elapsed_seconds']:.3f}s: {type(exc).__name__}: {exc}"
+        )
+        raise
+    summary = run.finish()
+    logger.info(
+        f"Profile update run {run.run_id} succeeded after {summary['elapsed_seconds']:.3f}s"
+    )
 
 
 if __name__ == "__main__":

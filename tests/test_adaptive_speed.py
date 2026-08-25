@@ -60,10 +60,13 @@ def make_args_module():
         target_group="select",
         global_group="GLOBAL",
         meta_start_command="mihomo -d profiles",
-        min_speed_threshold_kbps=512,
+        min_speed_threshold_kbps=0,
         discard=True,
         profile_remote_url_path="urls.txt",
         load_balance_strategy="round-robin",
+        failure_cooldown_days=[0, 1, 3, 7],
+        failure_cooldown_head_start_hours=1,
+        failure_db_path="",
     )
     module.test_args = SimpleNamespace(
         speed_test_mode="sdk",
@@ -135,7 +138,7 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.args.speed_outage_min_samples = 5
         self.args.speed_outage_fail_ratio = 0.8
         self.args.test_speed = True
-        self.args_module.config_args.min_speed_threshold_kbps = 512
+        self.args_module.config_args.min_speed_threshold_kbps = 0
 
     def sample(self, size_mb, body_seconds, goodput, ttfb_ms=100):
         return self.api.DownloadSample(
@@ -151,10 +154,17 @@ class AdaptiveSpeedTests(unittest.TestCase):
 
     def test_probe_time_limit_is_overhead_plus_size_at_speed_floor(self):
         mebi = self.api.MEBIBYTE
-        self.assertEqual(self.api.probe_time_limit_seconds(1 * mebi), 7.0)
-        self.assertEqual(self.api.probe_time_limit_seconds(4 * mebi), 13.0)
-        self.assertEqual(self.api.probe_time_limit_seconds(8 * mebi), 21.0)
-        self.assertEqual(self.api.probe_time_limit_seconds(16 * mebi), 30.0)
+        with patch.object(self.args_module.config_args, "min_speed_threshold_kbps", 512):
+            self.assertEqual(self.api.probe_time_limit_seconds(1 * mebi), 7.0)
+            self.assertEqual(self.api.probe_time_limit_seconds(4 * mebi), 13.0)
+            self.assertEqual(self.api.probe_time_limit_seconds(8 * mebi), 21.0)
+            self.assertEqual(self.api.probe_time_limit_seconds(16 * mebi), 30.0)
+
+    def test_probe_time_limit_uses_bounded_cap_when_speed_floor_is_disabled(self):
+        self.assertEqual(
+            self.api.probe_time_limit_seconds(self.api.MEBIBYTE),
+            self.args.speed_http_max_transfer_seconds,
+        )
 
     def test_config_rejects_invalid_ladder_and_duration(self):
         self.args.speed_http_sizes_mb = [1, 8, 4]
@@ -164,6 +174,11 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.args.speed_http_sizes_mb = [1, 4]
         self.args.speed_http_min_duration = 31.0
         with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            self.api.validate_adaptive_speed_config()
+
+        self.args.speed_http_min_duration = 3.0
+        self.args_module.config_args.min_speed_threshold_kbps = -1
+        with self.assertRaisesRegex(ValueError, "cannot be negative"):
             self.api.validate_adaptive_speed_config()
 
     def test_download_sample_separates_ttfb_and_body_and_caps_bytes(self):
@@ -188,7 +203,7 @@ class AdaptiveSpeedTests(unittest.TestCase):
         )
         self.assertEqual(kwargs["headers"]["Accept-Encoding"], "identity")
         self.assertEqual(kwargs["headers"]["Referer"], "https://speed.example/")
-        self.assertEqual(kwargs["timeout"], (7.0, 7.0))
+        self.assertEqual(kwargs["timeout"], (10.0, 15.0))
         self.assertFalse(kwargs["allow_redirects"])
         self.assertIn(str(size_bytes), request.call_args.args[0])
 
@@ -446,6 +461,55 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.assertFalse(self.speed.should_persist_speed_failures(10, 0))
         self.args.speed_test_mode = "sdk"
         self.assertTrue(self.speed.should_persist_speed_failures(10, 10))
+
+    def test_failure_cooldown_uses_run_anchor_not_outcome_write_time(self):
+        run_started_at = 1_000_000.0
+        outcome_write_time = run_started_at + 10 * 60
+        next_daily_run = run_started_at + 24 * 60 * 60
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = os.path.join(tmp, "profile.yaml")
+            failure_db = self.speed.ProxyFailureDB(os.path.join(tmp, "failures.db"))
+            failure_db.record_failures_batch(["dead.example"], now=run_started_at - 24 * 60 * 60)
+            with open(profile_path, "w", encoding="utf-8") as profile_file:
+                yaml.safe_dump(
+                    {
+                        "proxies": [
+                            {
+                                "name": "dead",
+                                "type": "ss",
+                                "server": "dead.example",
+                                "port": 443,
+                                "cipher": "aes-128-gcm",
+                                "password": "secret",
+                            }
+                        ],
+                        "proxy-groups": [
+                            {"name": "select Group 1", "type": "select", "proxies": ["dead"]}
+                        ],
+                    },
+                    profile_file,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+            with (
+                patch.object(self.speed, "get_newest_profile", return_value=profile_path),
+                patch.object(self.speed, "get_latency", return_value={}),
+                patch.object(self.speed, "get_speed", return_value={}),
+                patch.object(self.speed, "load_keep_hosts", return_value=set()),
+                patch.object(self.speed, "ProxyFailureDB", return_value=failure_db),
+                patch.object(self.speed.time, "time", return_value=outcome_write_time),
+            ):
+                self.speed.test_latency_speed(failure_cooldown_anchor=run_started_at)
+
+            self.assertEqual(
+                failure_db.get_cooldown_until("dead.example"),
+                run_started_at + 23 * 60 * 60,
+            )
+            self.assertFalse(failure_db.should_filter("dead.example", now=next_daily_run))
+            self.assertLess(
+                failure_db.get_cooldown_until("dead.example"),
+                outcome_write_time + 23 * 60 * 60,
+            )
 
     def test_semantic_group_rebuild_ignores_order_and_removes_test_groups(self):
         old = {"old-a", "old-b"}

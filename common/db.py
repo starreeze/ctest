@@ -9,6 +9,7 @@ from common.args import config_args, logger
 
 
 SECONDS_PER_DAY = 24 * 60 * 60
+SECONDS_PER_HOUR = 60 * 60
 
 
 class ProxyFailureDB:
@@ -38,14 +39,18 @@ class ProxyFailureDB:
         return sqlite3.connect(self.db_path)
 
     @staticmethod
-    def cooldown_days_for_count(count: int) -> int:
+    def cooldown_seconds_for_count(count: int) -> int:
         cooldowns = config_args.failure_cooldown_days
-        if not cooldowns or any(days <= 0 for days in cooldowns):
-            raise ValueError("failure_cooldown_days must contain positive day counts")
-        return cooldowns[min(max(count, 1), len(cooldowns)) - 1]
+        if not cooldowns or any(days < 0 for days in cooldowns):
+            raise ValueError("failure_cooldown_days must contain non-negative day counts")
+        head_start_hours = config_args.failure_cooldown_head_start_hours
+        if head_start_hours < 0:
+            raise ValueError("failure_cooldown_head_start_hours must be non-negative")
+        days = cooldowns[min(max(count, 1), len(cooldowns)) - 1]
+        return max(days * SECONDS_PER_DAY - head_start_hours * SECONDS_PER_HOUR, 0)
 
     def record_failures_batch(self, hosts: list[str], now: float | None = None) -> None:
-        """Increment each host once and start its 1/3/7-day cooldown."""
+        """Increment each host once and apply its 0/23/71/167-hour cooldown."""
         hosts = list(dict.fromkeys(str(host) for host in hosts))
         if not hosts:
             return
@@ -62,7 +67,7 @@ class ProxyFailureDB:
             rows = []
             for host in hosts:
                 count = existing.get(host, 0) + 1
-                cooldown_until = current_time + self.cooldown_days_for_count(count) * SECONDS_PER_DAY
+                cooldown_until = current_time + self.cooldown_seconds_for_count(count)
                 rows.append((host, count, current_time, cooldown_until))
             conn.executemany(
                 """

@@ -88,8 +88,8 @@ def validate_adaptive_speed_config() -> list[int]:
         raise ValueError("adaptive speed timeouts must be positive")
     if test_args.speed_http_connect_overhead < 0:
         raise ValueError("speed_http_connect_overhead cannot be negative")
-    if config_args.min_speed_threshold_kbps <= 0:
-        raise ValueError("min_speed_threshold_kbps must be positive")
+    if config_args.min_speed_threshold_kbps < 0:
+        raise ValueError("min_speed_threshold_kbps cannot be negative")
     if test_args.speed_http_chunk_size_kb <= 0:
         raise ValueError("speed_http_chunk_size_kb must be positive")
     if not 0 < test_args.speed_http_ramp_fail_factor <= 1:
@@ -98,9 +98,11 @@ def validate_adaptive_speed_config() -> list[int]:
 
 
 def probe_time_limit_seconds(size_bytes: int) -> float:
-    """Wall-clock budget: connect/TTFB overhead plus time to finish at the failure-DB speed floor."""
+    """Return a bounded wall-clock budget, optionally tightened by the configured speed floor."""
     if size_bytes <= 0:
         raise ValueError("probe size must be positive")
+    if config_args.min_speed_threshold_kbps == 0:
+        return test_args.speed_http_max_transfer_seconds
     rate_bytes = config_args.min_speed_threshold_kbps * 1024
     return min(
         test_args.speed_http_connect_overhead + size_bytes / rate_bytes,

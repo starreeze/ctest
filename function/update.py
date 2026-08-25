@@ -68,7 +68,7 @@ def fetch_converted_profile(feed_urls: list[str], config_url: str) -> str:
     raise RuntimeError(f"All subconvert backends failed, last error: {last_error}") from last_error
 
 
-def update():
+def update() -> dict:
     urls = []
     for url, keep in load_enabled_feeds(args.profile_remote_url_path):
         url = datetime.strftime(datetime.now(), url)
@@ -87,3 +87,4 @@ def update():
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(content)
     os.replace(tmp_path, profile)
+    return {"merged_proxies": len(load_raw_clash_yaml(content)["proxies"])}

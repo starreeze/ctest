@@ -32,6 +32,8 @@ You need to manually reactivate your profile before pressing ENTER to run latenc
 
 After finishing, reactivate your profile again. The proxy names now have their latency and speed info on them: `{latency_ms} - {download_MiBps} - {original_name}`. They are sorted by downloading speed by default.
 
+Each full or directly launched `fix`/`speed` run appends a compact JSONL summary after it succeeds or fails. See [Run history](docs/run-history.md) for the location, fields, and cron/manual origin controls.
+
 Below are some separate functions for reference only and you may not need them.
 
 ### Fix unsupported names
@@ -62,7 +64,7 @@ Speed test defaults to `--speed_test_mode adaptive` (HTTPS download through the 
 python -m function.speed --speed_test_mode sdk
 ```
 
-Adaptive mode uses `https://speed.cloudflare.com/__down?bytes={bytes}` by default. It ramps through 1, 4, 8, and 16 MiB probes until the response body takes at least three seconds, then collects two measurements at that size. Connection setup/TTFB is logged separately from body goodput. Each probe's wall-clock budget is `--speed_http_connect_overhead` (default 5 s) plus the time to finish that size at `--min_speed_threshold_kbps` (default 512 KiB/s), capped by `--speed_http_max_transfer_seconds` (30 s): **7 / 13 / 21 / 30 s**. The stored score is:
+Adaptive mode uses `https://speed.cloudflare.com/__down?bytes={bytes}` by default. It ramps through 1, 4, 8, and 16 MiB probes until the response body takes at least three seconds, then collects two measurements at that size. Connection setup/TTFB is logged separately from body goodput. There is no minimum-speed floor by default: `--min_speed_threshold_kbps 0` gives every probe the bounded `--speed_http_max_transfer_seconds` wall-clock budget (default 30 s). Setting a positive floor restores size-based budgets of `--speed_http_connect_overhead + size / floor`, capped by the same maximum; for example, `--min_speed_threshold_kbps 512` produces **7 / 13 / 21 / 30 s** budgets for the default sizes. The stored score is:
 
 ```text
 successful trial fraction * p25(successful body goodput in MiB/s)
@@ -76,7 +78,7 @@ During throughput tests the core is switched to `global` mode and the node is se
 
 In meta mode, the test core uses a temporary copy of the profile. Only the configured HTTP proxy and controller are bound on localhost; SOCKS, DNS, TUN, redirection, and transparent-proxy listeners are disabled so the test cannot claim unrelated local ports. Deprecated DNS `fallback-filter.geosite` routing is migrated to `nameserver-policy` while preserving the same fallback resolvers.
 
-Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward until one produces positive traffic; that winner represents the host in the final profile. Failed hosts enter a 1/3/7-day cooldown, keyed by host, and any later success clears the streak. In adaptive mode, speed-derived failure writes are skipped when the configured failure ratio indicates that the shared measurement endpoint itself is likely down.
+Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward until one produces positive traffic; that winner represents the host in the final profile. Failed hosts use a 0/23/71/167-hour cooldown sequence, keyed by host: the first failure is retained but does not delay the next attempt, while the fourth and later failures remain capped at 167 hours. Any later success clears the streak. Cooldowns are anchored to the run start rather than the later result-write time; `--failure_cooldown_head_start_hours` defaults to one and is subtracted from each positive tier so a daily cron invocation can retry an expired host. In adaptive mode, speed-derived failure writes are skipped when the configured failure ratio indicates that the shared measurement endpoint itself is likely down.
 
 `--speed_test_url` must use HTTPS. One HTTPS redirect is followed; an HTTP hop or a second redirect fails the probe. Requests send `Referer` set to the URL origin so Cloudflare `__down` accepts 16 MiB probes. The URL may contain a `{bytes}` placeholder, or point to a fixed object on a server that supports byte ranges. Prefer an endpoint you operate if repeatability matters; public endpoints add server and peering variability.
 
@@ -92,6 +94,7 @@ The main adaptive controls are:
 --speed_http_connect_overhead 5
 --speed_http_max_transfer_seconds 30
 --speed_http_read_timeout 30
+--min_speed_threshold_kbps 0
 --speed_http_ramp_fail_factor 0.85
 --speed_outage_min_samples 5
 ```

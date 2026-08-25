@@ -13,9 +13,10 @@ from unittest.mock import patch
 def make_args_module():
     module = types.ModuleType("common.args")
     module.config_args = SimpleNamespace(
-        failure_cooldown_days=[1, 3, 7],
+        failure_cooldown_days=[0, 1, 3, 7],
+        failure_cooldown_head_start_hours=1,
         failure_db_path="",
-        unsupported_names=["cipher: chacha20-poly1305"],
+        unsupported_names=["cipher: chacha20-poly1305", "obfs: none", "cipher: ss"],
         target_group="select",
         max_proxies_per_group=100,
         load_balance_strategy="round-robin",
@@ -57,6 +58,28 @@ class HostIdentityTests(unittest.TestCase):
         )
         self.assertEqual([item["name"] for item in kept], ["pin"])
         self.assertEqual(dropped, ["fail"])
+
+    def test_unsupported_key_value_rules_use_exact_matches(self):
+        self.assertTrue(
+            self.fix.has_unsupported_field(
+                proxy("legacy", "1.1.1.1", 443, {"cipher": "chacha20-poly1305"})
+            )
+        )
+        self.assertFalse(
+            self.fix.has_unsupported_field(
+                proxy("ss-2022", "1.1.1.1", 443, {"cipher": "2022-blake3-chacha20-poly1305"})
+            )
+        )
+        self.assertTrue(
+            self.fix.has_unsupported_field(
+                proxy("bad-cipher", "1.1.1.1", 443, {"cipher": "ss"})
+            )
+        )
+        self.assertTrue(
+            self.fix.has_unsupported_field(
+                proxy("bad-obfs", "1.1.1.1", 443, {"obfs": "none"})
+            )
+        )
 
     def test_deprecated_dns_geosite_is_migrated(self):
         profile = {
@@ -113,18 +136,36 @@ class HostIdentityTests(unittest.TestCase):
     def test_dynamic_cooldown_progression_and_success_reset(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = self.db_mod.ProxyFailureDB(os.path.join(tmp, "failures.db"))
-            day = self.db_mod.SECONDS_PER_DAY
             now = 1_000_000.0
-            for expected_count, expected_days in [(1, 1), (2, 3), (3, 7), (4, 7)]:
+            for expected_count, expected_hours in [
+                (1, 0),
+                (2, 23),
+                (3, 71),
+                (4, 167),
+                (5, 167),
+            ]:
                 db.record_failures_batch(["host", "host"], now=now)
                 self.assertEqual(db.get_failure_count("host"), expected_count)
-                self.assertEqual(db.get_cooldown_until("host"), now + expected_days * day)
-                self.assertTrue(db.should_filter("host", now=now))
-                self.assertFalse(db.should_filter("host", now=now + expected_days * day))
-                now += expected_days * day
+                cooldown_until = now + expected_hours * 60 * 60
+                self.assertEqual(db.get_cooldown_until("host"), cooldown_until)
+                self.assertEqual(db.should_filter("host", now=now), expected_hours > 0)
+                self.assertFalse(db.should_filter("host", now=cooldown_until))
+                now = cooldown_until
             db.record_successes_batch(["host"])
             self.assertEqual(db.get_failure_count("host"), 0)
             self.assertFalse(db.should_filter("host", now=now))
+
+    def test_cooldown_head_start_must_be_non_negative(self):
+        with patch.object(self.args_module.config_args, "failure_cooldown_head_start_hours", -1):
+            with self.assertRaisesRegex(ValueError, "must be non-negative"):
+                self.db_mod.ProxyFailureDB.cooldown_seconds_for_count(2)
+
+    def test_cooldown_head_start_is_configurable(self):
+        with patch.object(self.args_module.config_args, "failure_cooldown_head_start_hours", 2):
+            self.assertEqual(
+                self.db_mod.ProxyFailureDB.cooldown_seconds_for_count(2),
+                22 * self.db_mod.SECONDS_PER_HOUR,
+            )
 
     def test_schema_is_host_level(self):
         with tempfile.TemporaryDirectory() as tmp:

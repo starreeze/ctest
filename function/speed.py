@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
+import time
 from collections import defaultdict
 
 import yaml
@@ -138,7 +139,9 @@ def choose_keep_fallbacks(
         selected[name] = (0.0, all_valid.get(name, test_args.latency_timeout))
 
 
-def test_latency_speed() -> None:
+def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
+    if failure_cooldown_anchor is None:
+        failure_cooldown_anchor = time.time()
     profile_path = get_newest_profile()
     with open(profile_path, "r", encoding="utf-8") as profile_file:
         config = convert_to_str(yaml.safe_load(profile_file))
@@ -180,7 +183,10 @@ def test_latency_speed() -> None:
     failures_to_record = set(latency_failed_hosts)
     if should_persist_speed_failures(len(latency_hosts), len(speed_failed_hosts)):
         failures_to_record |= speed_failed_hosts
-    failure_db.record_failures_batch(sorted(failures_to_record))
+    failure_db.record_failures_batch(
+        sorted(failures_to_record),
+        now=failure_cooldown_anchor,
+    )
     logger.info(
         f"Host outcomes: {len(success_hosts)} passed, {len(latency_failed_hosts)} failed latency, "
         f"{len(speed_failed_hosts)} failed speed, {len(keep_hosts)} pinned"
@@ -198,8 +204,27 @@ def test_latency_speed() -> None:
 
     with open(profile_path, "w", encoding="utf-8") as profile_file:
         profile_file.write(dump_yaml(config))
+    return {
+        "input_candidates": len(proxies),
+        "latency_passed": len(all_valid),
+        "hosts_passed": len(success_hosts),
+        "hosts_failed_latency": len(latency_failed_hosts),
+        "hosts_failed_speed": len(speed_failed_hosts),
+        "pinned_hosts": len(keep_hosts),
+        "preserved_proxies": len(final_proxies),
+    }
 
 
 if __name__ == "__main__":
+    from common.run_history import run_single_stage
+
     apply_runtime_proxy_env()
-    test_latency_speed()
+    path = get_newest_profile()
+    run_single_stage(
+        "speed",
+        test_latency_speed,
+        config_args.run_history_path,
+        config_args.run_origin,
+        path,
+        logger,
+    )

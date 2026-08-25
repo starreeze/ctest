@@ -96,7 +96,7 @@ def has_unsupported_field(proxy: dict) -> bool:
             key, value = unsupported.split(":", 1)
             key = key.strip()
             value = value.strip()
-            if key in proxy and value in str(proxy[key]):
+            if key in proxy and value == str(proxy[key]):
                 return True
         else:
             # For patterns without ":", check if it appears in any value
@@ -227,10 +227,10 @@ def update_proxy_references(
 _CORE_PROXY_ERROR = re.compile(r"proxy (\d+):\s*(.+)")
 
 
-def drop_proxies_rejected_by_core(profile_path: str, max_drops: int = 32) -> None:
+def drop_proxies_rejected_by_core(profile_path: str, max_drops: int = 32) -> int:
     """Drop nodes whose fields fatal-exit Mihomo until `mihomo -t` passes."""
     profile_dir = os.path.dirname(os.path.abspath(profile_path)) or "."
-    for _ in range(max_drops):
+    for dropped_count in range(max_drops):
         logger.info("Validating profile with mihomo -t")
         result = subprocess.run(
             ["mihomo", "-t", "-d", profile_dir],
@@ -240,7 +240,7 @@ def drop_proxies_rejected_by_core(profile_path: str, max_drops: int = 32) -> Non
         )
         if result.returncode == 0:
             logger.info("mihomo -t passed")
-            return
+            return dropped_count
         log = result.stdout + result.stderr
         match = _CORE_PROXY_ERROR.search(log)
         if not match:
@@ -266,7 +266,7 @@ def drop_proxies_rejected_by_core(profile_path: str, max_drops: int = 32) -> Non
     raise RuntimeError(f"mihomo still rejects the profile after {max_drops} proxy drops")
 
 
-def fix(profile_path: str):
+def fix(profile_path: str) -> dict:
     """
     Fix clash profile by:
     1. Removing proxies with unsupported fields
@@ -294,7 +294,7 @@ def fix(profile_path: str):
 
     logger.info(f"Removed {len(unsupported_names)} unsupported proxies")
 
-    # A cooling host is excluded until its 1/3/7-day retry time, except pinned feeds.
+    # A cooling host is excluded until its 0/23/71/167-hour retry time, except pinned feeds.
     failure_db = ProxyFailureDB()
     filtered_by_failures = failure_db.get_filtered_proxies()
     keep_hosts = load_keep_hosts(args.profile_remote_url_path)
@@ -338,8 +338,26 @@ def fix(profile_path: str):
 
     with open(profile_path, "w", encoding="utf-8") as f:
         f.write(dump_yaml(profile_dict))
-    drop_proxies_rejected_by_core(profile_path)
+    core_rejected_count = drop_proxies_rejected_by_core(profile_path)
+    return {
+        "input_proxies": len(original_proxies),
+        "unsupported_removed": len(unsupported_names),
+        "cooldown_removed": len(failure_filtered_names),
+        "redundant_removed": redundant_count,
+        "core_rejected_removed": core_rejected_count,
+        "preserved_proxies": len(fixed_proxies) - core_rejected_count,
+    }
 
 
 if __name__ == "__main__":
-    fix(get_newest_profile())
+    from common.run_history import run_single_stage
+
+    path = get_newest_profile()
+    run_single_stage(
+        "fix",
+        lambda: fix(path),
+        args.run_history_path,
+        args.run_origin,
+        path,
+        logger,
+    )

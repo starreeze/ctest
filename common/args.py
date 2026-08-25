@@ -49,12 +49,28 @@ class Config:
     failure_db_path: str = field(
         default="", metadata={"help": "path to failure tracking database (default: local app data)"}
     )
+    run_history_path: str = field(
+        default="", metadata={"help": "JSONL run summary path (default: local app data)"}
+    )
+    run_origin: Literal["auto", "cron", "manual"] = field(
+        default="auto",
+        metadata={"help": "invocation origin; auto recognizes cron from Linux process ancestry"},
+    )
     failure_cooldown_days: list[int] = field(
-        default_factory=lambda: [1, 3, 7],
-        metadata={"help": "host cooldown days after the first, second, and later failed runs"},
+        default_factory=lambda: [0, 1, 3, 7],
+        metadata={
+            "help": "host cooldown day tiers after consecutive failed runs; positive tiers use the configured head start"
+        },
+    )
+    failure_cooldown_head_start_hours: int = field(
+        default=1,
+        metadata={"help": "hours subtracted from each positive host cooldown tier"},
     )
     min_speed_threshold_kbps: int = field(
-        default=512, metadata={"help": "minimum speed in KB/s, below which is considered a failure (512 KB/s = 0.5 MiB/s)"}
+        default=0,
+        metadata={
+            "help": "minimum adaptive speed in KiB/s used for size-based probe deadlines; 0 disables the floor"
+        },
     )
     load_balance_strategy: str = field(
         default="round-robin", metadata={"help": "strategy for load-balance proxy groups"}
@@ -121,7 +137,9 @@ class TestArgs:
     )
     speed_http_max_transfer_seconds: float = field(
         default=30.0,
-        metadata={"help": "cap on adaptive probe wall time (overhead + size / min_speed_threshold)"},
+        metadata={
+            "help": "adaptive probe wall-time cap; also the full budget when min_speed_threshold_kbps is 0"
+        },
     )
     speed_http_chunk_size_kb: int = field(default=64)
     speed_http_ramp_fail_factor: float = field(
@@ -167,10 +185,13 @@ else:  # Linux and others
 config_args.profile_dir = os.path.join(base_appdata, config_args.profile_dir)
 
 # Set failure database path to local app data if not specified
+app_data_dir = os.path.join(local_appdata, "clash-proxy-tester")
 if not config_args.failure_db_path:
-    app_data_dir = os.path.join(local_appdata, "clash-proxy-tester")
     os.makedirs(app_data_dir, exist_ok=True)
     config_args.failure_db_path = os.path.join(app_data_dir, "proxy_failures.db")
+if not config_args.run_history_path:
+    os.makedirs(app_data_dir, exist_ok=True)
+    config_args.run_history_path = os.path.join(app_data_dir, "run_history.jsonl")
 if not config_args.profiles:
     config_args.profiles = [
         os.path.join(config_args.profile_dir, f)
