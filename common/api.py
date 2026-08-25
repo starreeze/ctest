@@ -3,7 +3,10 @@
 # @Author  : Shangyu.Xing (starreeze@foxmail.com)
 "interface with the clash meta core & speedtest api"
 import os
+import shlex
+import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from math import ceil, floor
@@ -12,31 +15,39 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import requests
 import speedtest
+import yaml
 from func_timeout import FunctionTimedOut, func_set_timeout
 from iterwrap import retry_dec
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from common.args import config_args, logger, test_args
+from common.utils import dump_yaml
 
 header = {"Authorization": f"Bearer {config_args.controller_password}"}
+controller_session = requests.Session()
+controller_session.trust_env = False
 MEBIBYTE = 1024 * 1024
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
 def get(*args, **kwargs):
-    return requests.get(*args, **kwargs, headers=header)
+    kwargs.setdefault("timeout", config_args.controller_timeout)
+    return controller_session.get(*args, **kwargs, headers=header)
 
 
 def put(*args, **kwargs):
-    return requests.put(*args, **kwargs, headers=header)
+    kwargs.setdefault("timeout", config_args.controller_timeout)
+    return controller_session.put(*args, **kwargs, headers=header)
 
 
 def post(*args, **kwargs):
-    return requests.post(*args, **kwargs, headers=header)
+    kwargs.setdefault("timeout", config_args.controller_timeout)
+    return controller_session.post(*args, **kwargs, headers=header)
 
 
 def patch(*args, **kwargs):
-    return requests.patch(*args, **kwargs, headers=header)
+    kwargs.setdefault("timeout", config_args.controller_timeout)
+    return controller_session.patch(*args, **kwargs, headers=header)
 
 
 @dataclass(frozen=True)
@@ -334,7 +345,7 @@ def set_core_mode(mode: str) -> None:
 def select_proxy(name: str, group: str) -> bool:
     url = config_args.controller_url + f"/proxies/{quote(group, safe='')}"
     response = put(url, json={"name": name})
-    if response.status_code // 100 != 2 or response.text:
+    if response.status_code // 100 != 2:
         logger.error(f"Failed to set proxy {name} on {group}: {response.text}")
         return False
     return True
@@ -389,34 +400,34 @@ def get_latency(proxies: list[str], group_name: str) -> dict[str, int]:
     return {key: value for key, value in latency.items() if 0 < value < test_args.latency_timeout}
 
 
-def get_speed(latencies: list[tuple[str, int]]) -> dict[str, tuple[float, int]]:
-    "return valid proxy names and their download speed in MiB/s and latency in ms"
+def get_speed(
+    latencies: list[tuple[str, int]], name_to_host: dict[str, str]
+) -> dict[str, tuple[float, int]]:
+    """Return the first positive-throughput endpoint per host, tried by latency."""
+    candidates: dict[str, list[tuple[str, int]]] = {}
+    for name, latency in sorted(latencies, key=lambda item: item[1]):
+        candidates.setdefault(name_to_host[name], []).append((name, latency))
     speed_latency: dict[str, tuple[float, int]] = {}
-    num_success = 0
     previous_mode: str | None = None
     if test_args.test_speed:
         previous_mode = get_core_mode()
         if previous_mode != "global":
             set_core_mode("global")
     try:
-        for i, (name, latency) in enumerate(latencies):
-            if test_args.test_speed:
-                if num_success >= test_args.max_num:
-                    break
-                logger.debug(f"Testing proxy {name}. Latency: {latency}ms\n")
-                logger.info(
-                    f"Progress: Success - [{num_success}/{test_args.max_num}]; All - [{i+1}/{len(latencies)}]"
-                )
-                speed = test_speed_single(name)
-                logger.info(f"Speed for {name}: {speed:.2f} MiB/s")
-                if speed >= test_args.load_balance_thres:
-                    num_success += 1
-            else:
-                try:
-                    speed = float(name.split(" - ")[1])
-                except (ValueError, IndexError):
+        for host_index, (host, endpoints) in enumerate(candidates.items(), 1):
+            logger.info(
+                f"Testing host {host_index}/{len(candidates)} ({host}) with {len(endpoints)} latency-valid endpoint(s)"
+            )
+            for name, latency in endpoints:
+                if test_args.test_speed:
+                    speed = test_speed_single(name)
+                    logger.info(f"Speed for {name}: {speed:.2f} MiB/s")
+                    if speed <= 0:
+                        continue
+                else:
                     speed = 0.0
-            speed_latency[name] = (speed, latency)
+                speed_latency[name] = (speed, latency)
+                break
     except KeyboardInterrupt:
         logger.warning("KeyboardInterrupt detected, saving current results...")
     finally:
@@ -439,15 +450,47 @@ def restart_core():
 class MetaLifecycle:
     def __init__(self):
         self.process: subprocess.Popen | None = None
+        self.test_profile_path: str | None = None
 
-    def start(self) -> None:
-        self.process = subprocess.Popen(config_args.meta_start_command, shell=True)
+    def start(self, profile_path: str) -> None:
+        with open(profile_path, encoding="utf-8") as profile_file:
+            profile = yaml.safe_load(profile_file)
+
+        proxy_url = urlsplit(config_args.proxy_url)
+        controller_url = urlsplit(config_args.controller_url)
+        if proxy_url.scheme != "http" or not proxy_url.port:
+            raise ValueError("meta mode requires an http proxy_url with an explicit port")
+        if controller_url.scheme != "http" or not controller_url.hostname or not controller_url.port:
+            raise ValueError("meta mode requires an http controller_url with an explicit host and port")
+
+        for key in ("mixed-port", "socks-port", "redir-port", "tproxy-port"):
+            profile[key] = 0
+        profile["port"] = proxy_url.port
+        profile["allow-lan"] = False
+        profile["bind-address"] = "127.0.0.1"
+        profile["external-controller"] = f"{controller_url.hostname}:{controller_url.port}"
+        profile["secret"] = config_args.controller_password
+        if isinstance(profile.get("dns"), dict):
+            profile["dns"]["enable"] = False
+        if isinstance(profile.get("tun"), dict):
+            profile["tun"]["enable"] = False
+
+        fd, self.test_profile_path = tempfile.mkstemp(prefix="clash-test-core-", suffix=".yaml")
+        with os.fdopen(fd, "w", encoding="utf-8") as test_profile:
+            test_profile.write(dump_yaml(profile))
+
+        self.process = subprocess.Popen(
+            [*shlex.split(config_args.meta_start_command), "-f", self.test_profile_path],
+            start_new_session=True,
+        )
         deadline = time.time() + max(test_args.core_restart_timeout, 30)
         while time.time() < deadline:
             if self.process.poll() is not None:
                 raise RuntimeError(f"mihomo exited with code {self.process.returncode} before the controller was ready")
             try:
-                resp = requests.get(f"{config_args.controller_url}/version", headers=header, timeout=1)
+                resp = controller_session.get(
+                    f"{config_args.controller_url}/version", headers=header, timeout=1
+                )
                 if resp.ok:
                     logger.info("Mihomo controller is ready")
                     return
@@ -457,8 +500,17 @@ class MetaLifecycle:
         raise RuntimeError("mihomo did not become ready")
 
     def stop(self) -> None:
-        if self.process is not None:
-            self.process.terminate()
-            self.process.wait()
-            self.process = None
-        os.system("pkill -f mihomo")
+        process = self.process
+        self.process = None
+        try:
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+        finally:
+            if self.test_profile_path is not None:
+                os.unlink(self.test_profile_path)
+                self.test_profile_path = None

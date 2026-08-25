@@ -1,4 +1,4 @@
-keep https://raw.githubusercontent.com/starreeze/ctest/main/assets/vultr-deploy.yaml
+!https://raw.githubusercontent.com/starreeze/ctest/main/assets/vultr-deploy.yaml
 https://raw.githubusercontent.com/starreeze/ctest/main/assets/nodefiltrate.yaml
 # https://raw.githubusercontent.com/ripaojiedian/freenode/main/clash
 https://raw.githubusercontent.com/zhangkaiitugithub/passcro/main/speednodes.yaml

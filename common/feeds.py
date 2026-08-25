@@ -7,27 +7,23 @@ import requests
 
 from common.utils import github_feed_parts, load_raw_clash_yaml, rewrite_github_feed_url
 
+direct_session = requests.Session()
+direct_session.trust_env = False
+
 
 def parse_feed_list(lines: Iterable[str]) -> list[tuple[str, bool]]:
-    """Return (url, keep) for enabled urls.txt lines. Prefix keep / keep: pins that feed's hosts."""
+    """Return (url, pinned) for enabled urls.txt lines. A leading ! pins the feed's hosts."""
     feeds: list[tuple[str, bool]] = []
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        keep = False
-        lowered = line.lower()
-        if lowered == "keep":
-            raise ValueError(f"keep marker is missing a feed URL: {raw!r}")
-        if lowered.startswith("keep:"):
-            keep = True
-            line = line.split(":", 1)[1].strip()
-        elif lowered.startswith("keep "):
-            keep = True
-            line = line[5:].strip()
-        if keep and (not line or line.startswith("#")):
-            raise ValueError(f"keep marker is missing a feed URL: {raw!r}")
-        feeds.append((line, keep))
+        pinned = line.startswith("!")
+        if pinned:
+            line = line[1:].strip()
+            if not line or line.startswith("#"):
+                raise ValueError(f"pin marker is missing a feed URL: {raw!r}")
+        feeds.append((line, pinned))
     return feeds
 
 
@@ -57,10 +53,9 @@ def _read_keep_feed(url: str, url_list_path: str) -> str:
         with open(local, encoding="utf-8") as f:
             return f.read()
     rewritten = rewrite_github_feed_url(url)
-    response = requests.get(
+    response = direct_session.get(
         rewritten,
         timeout=30,
-        proxies={"http": None, "https": None},
     )
     response.raise_for_status()
     return response.content.decode("utf-8", errors="replace")

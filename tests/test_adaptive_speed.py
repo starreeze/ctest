@@ -1,9 +1,13 @@
 import importlib
+import os
 import sys
+import tempfile
 import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import yaml
 
 
 class FakeRaw:
@@ -51,6 +55,7 @@ def make_args_module():
     module.config_args = SimpleNamespace(
         controller_password="secret",
         controller_url="http://127.0.0.1:9090",
+        controller_timeout=10.0,
         proxy_url="http://127.0.0.1:7890",
         target_group="select",
         global_group="GLOBAL",
@@ -58,6 +63,7 @@ def make_args_module():
         min_speed_threshold_kbps=512,
         discard=True,
         profile_remote_url_path="urls.txt",
+        load_balance_strategy="round-robin",
     )
     module.test_args = SimpleNamespace(
         speed_test_mode="sdk",
@@ -83,7 +89,6 @@ def make_args_module():
         latency_test_times=1,
         latency_test_urls=["https://example.com"],
         test_speed=True,
-        max_num=3,
         load_balance_thres=0.5,
     )
     module.logger = MagicMock()
@@ -130,7 +135,6 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.args.speed_outage_min_samples = 5
         self.args.speed_outage_fail_ratio = 0.8
         self.args.test_speed = True
-        self.args.max_num = 3
         self.args_module.config_args.min_speed_threshold_kbps = 512
 
     def sample(self, size_mb, body_seconds, goodput, ttfb_ms=100):
@@ -337,6 +341,61 @@ class AdaptiveSpeedTests(unittest.TestCase):
             self.assertEqual(self.api.test_speed_single("node"), 7.0)
             sdk.assert_called_once_with()
 
+    def test_controller_session_ignores_proxy_environment(self):
+        self.assertFalse(self.api.controller_session.trust_env)
+
+    def test_select_proxy_accepts_nonempty_success_response(self):
+        response = SimpleNamespace(status_code=200, text='{"ok":true}')
+        with patch.object(self.api, "put", return_value=response):
+            self.assertTrue(self.api.select_proxy("node", "select"))
+
+    def test_meta_stop_terminates_only_owned_process_group(self):
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        lifecycle = self.api.MetaLifecycle()
+        lifecycle.process = process
+        with patch.object(self.api.os, "killpg") as killpg:
+            lifecycle.stop()
+        killpg.assert_called_once_with(1234, self.api.signal.SIGTERM)
+        process.wait.assert_called_once_with(timeout=10)
+        self.assertIsNone(lifecycle.process)
+
+    def test_meta_start_uses_isolated_test_listeners(self):
+        profile = {
+            "port": 7000,
+            "socks-port": 7891,
+            "mixed-port": 7002,
+            "allow-lan": True,
+            "bind-address": "*",
+            "external-controller": "0.0.0.0:9999",
+            "dns": {"enable": True, "listen": "0.0.0.0:53"},
+            "proxies": [{"name": "node", "type": "direct"}],
+        }
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        ready = SimpleNamespace(ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "profile.yaml")
+            with open(source, "w", encoding="utf-8") as profile_file:
+                yaml.safe_dump(profile, profile_file)
+            lifecycle = self.api.MetaLifecycle()
+            with patch.object(self.api.subprocess, "Popen", return_value=process) as popen, patch.object(
+                self.api.controller_session, "get", return_value=ready
+            ), patch.object(self.api.os, "killpg"):
+                lifecycle.start(source)
+                test_path = lifecycle.test_profile_path
+                with open(test_path, encoding="utf-8") as test_file:
+                    isolated = yaml.safe_load(test_file)
+                self.assertEqual(isolated["port"], 7890)
+                self.assertEqual(isolated["socks-port"], 0)
+                self.assertEqual(isolated["mixed-port"], 0)
+                self.assertFalse(isolated["allow-lan"])
+                self.assertEqual(isolated["bind-address"], "127.0.0.1")
+                self.assertFalse(isolated["dns"]["enable"])
+                self.assertEqual(popen.call_args.args[0][-2:], ["-f", test_path])
+                lifecycle.stop()
+            self.assertFalse(os.path.exists(test_path))
+
     def test_get_speed_switches_to_global_and_restores(self):
         config_response = SimpleNamespace(
             status_code=200,
@@ -350,7 +409,7 @@ class AdaptiveSpeedTests(unittest.TestCase):
         ) as mode, patch.object(self.api, "put", return_value=ok) as select, patch.object(
             self.api, "test_download_speedtest", return_value=1.0
         ):
-            result = self.api.get_speed([("node-a", 120)])
+            result = self.api.get_speed([("node-a", 120)], {"node-a": "host-a"})
 
         self.assertEqual(result["node-a"], (1.0, 120))
         self.assertEqual(mode.call_args_list[0].kwargs["json"], {"mode": "global"})
@@ -358,9 +417,29 @@ class AdaptiveSpeedTests(unittest.TestCase):
         selected_groups = [call.args[0].rsplit("/", 1)[-1] for call in select.call_args_list]
         self.assertEqual(selected_groups, ["GLOBAL", "select"])
 
-    def test_persist_speed_failures_skips_only_when_every_node_aborted(self):
+    def test_get_speed_tries_same_host_by_latency_until_positive(self):
+        config_response = SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"mode": "rule"},
+            raise_for_status=lambda: None,
+        )
+        ok = SimpleNamespace(status_code=204, text="")
+        with patch.object(self.api, "get", return_value=config_response), patch.object(
+            self.api, "patch", return_value=ok
+        ), patch.object(self.api, "put", return_value=ok), patch.object(
+            self.api, "test_download_speedtest", side_effect=[0.25, 0.0, 2.0]
+        ) as download:
+            result = self.api.get_speed(
+                [("slow-latency", 300), ("fast-latency", 100), ("other", 50)],
+                {"slow-latency": "same", "fast-latency": "same", "other": "other"},
+            )
+        self.assertEqual(result, {"other": (0.25, 50), "slow-latency": (2.0, 300)})
+        self.assertEqual(download.call_count, 3)
+
+    def test_persist_speed_failures_uses_configured_ratio(self):
         self.args.speed_test_mode = "adaptive"
-        self.assertTrue(self.speed.should_persist_speed_failures(10, 9))
+        self.assertFalse(self.speed.should_persist_speed_failures(10, 9))
         self.assertFalse(self.speed.should_persist_speed_failures(10, 10))
         self.assertTrue(self.speed.should_persist_speed_failures(10, 3))
         self.assertTrue(self.speed.should_persist_speed_failures(2, 2))
@@ -368,18 +447,26 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.args.speed_test_mode = "sdk"
         self.assertTrue(self.speed.should_persist_speed_failures(10, 10))
 
-    def test_keep_hosts_survive_latency_discard(self):
-        timeout = self.args.latency_timeout
-        keep = {"name": f"{timeout} - 0.00 - pin", "server": "10.0.0.1"}
-        drop = {"name": f"{timeout} - 0.00 - other", "server": "10.0.0.2"}
-        ok = {"name": "0100 - 1.50 - fast", "server": "10.0.0.3"}
-        pinned = {"10.0.0.1"}
-        self.assertTrue(self.speed.should_retain_proxy(keep, pinned))
-        self.assertFalse(self.speed.should_retain_proxy(drop, pinned))
-        self.assertTrue(self.speed.should_retain_proxy(ok, pinned))
-        self.args_module.config_args.discard = False
-        self.assertTrue(self.speed.should_retain_proxy(drop, set()))
-        self.args_module.config_args.discard = True
+    def test_semantic_group_rebuild_ignores_order_and_removes_test_groups(self):
+        old = {"old-a", "old-b"}
+        final = ["0100 - 2.00 - new-a", "0200 - 0.25 - new-b"]
+        config = {
+            "proxy-groups": [
+                {"name": "static", "type": "select", "proxies": ["DIRECT"]},
+                {"name": "select Group 1", "type": "select", "proxies": ["old-a"]},
+                {"name": "service", "type": "select", "proxies": ["static", "old-b"]},
+                {"name": "balance", "type": "load-balance", "proxies": ["old-a", "old-b"]},
+            ]
+        }
+        self.speed.rebuild_proxy_groups(config, old, final)
+        self.assertEqual([group["name"] for group in config["proxy-groups"]], ["static", "service", "balance"])
+        self.assertEqual(config["proxy-groups"][1]["proxies"], ["static", *final])
+        self.assertEqual(config["proxy-groups"][2]["proxies"], [final[0]])
+
+    def test_semantic_group_rebuild_rejects_dangling_reference(self):
+        config = {"proxy-groups": [{"name": "g", "type": "select", "proxies": ["missing"]}]}
+        with self.assertRaisesRegex(ValueError, "dangling"):
+            self.speed.rebuild_proxy_groups(config, set(), [])
 
 
 if __name__ == "__main__":

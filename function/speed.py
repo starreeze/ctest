@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-from typing import Iterable
+import re
+from collections import defaultdict
 
 import yaml
 
@@ -10,9 +11,20 @@ from common.feeds import load_keep_hosts
 from common.utils import dump_yaml
 
 
-def should_persist_speed_failures(tested_count: int, abort_count: int) -> bool:
-    """Persist nodes with no successful sample unless adaptive mode looks like a shared-endpoint outage."""
-    if not test_args.test_speed or abort_count == 0:
+BUILTIN_POLICIES = {
+    "DIRECT",
+    "REJECT",
+    "REJECT-DROP",
+    "PASS",
+    "GLOBAL",
+    "COMPATIBLE",
+}
+MEASUREMENT_PREFIX = re.compile(r"^\d{4,} - \d+(?:\.\d+)? - ")
+
+
+def should_persist_speed_failures(tested_count: int, failure_count: int) -> bool:
+    """Suppress speed-derived host failures during a shared measurement outage."""
+    if not test_args.test_speed or failure_count == 0:
         return False
     if test_args.speed_test_mode != "adaptive":
         return True
@@ -20,152 +32,172 @@ def should_persist_speed_failures(tested_count: int, abort_count: int) -> bool:
         raise ValueError("speed_outage_min_samples must be positive")
     if not 0 <= test_args.speed_outage_fail_ratio <= 1:
         raise ValueError("speed_outage_fail_ratio must be between 0 and 1")
-    if tested_count >= test_args.speed_outage_min_samples and abort_count == tested_count:
+    failure_ratio = failure_count / tested_count if tested_count else 0
+    if (
+        tested_count >= test_args.speed_outage_min_samples
+        and failure_ratio >= test_args.speed_outage_fail_ratio
+    ):
         logger.warning(
-            f"Not persisting {abort_count}/{tested_count} aborted speed test(s): "
-            "failure rate looks like a shared measurement-endpoint outage"
+            f"Not persisting {failure_count}/{tested_count} speed-failed host(s): "
+            f"failure ratio {failure_ratio:.0%} suggests a shared measurement outage"
         )
         return False
     return True
 
 
-def replace_name(names: Iterable[str], info: dict[str, tuple[float, int]]) -> list[str]:
-    new_names = []
-    for name in names:
-        if name in info:
-            new_names.append(f"{info[name][1]:04d} - {info[name][0]:.2f} - {name.split(' - ')[-1]}")
-        else:
-            new_names.append(f"{test_args.latency_timeout} - 0.00 - {name.split(' - ')[-1]}")
-    return new_names
-    # return sorted(new_names, key=lambda x: int(x.split(" - ")[1]), reverse=True)
+def original_name(name: str) -> str:
+    return MEASUREMENT_PREFIX.sub("", name, count=1)
 
 
-def sl_from_name(name: str) -> tuple[float, int]:
-    latency, speed = name.split(" - ")[0:2]
+def measured_name(name: str, speed: float, latency: int) -> str:
+    return f"{latency:04d} - {speed:.2f} - {original_name(name)}"
+
+
+def score_from_name(name: str) -> tuple[float, int]:
+    latency, speed = name.split(" - ", 2)[:2]
     return -float(speed), int(latency)
 
 
-def should_retain_proxy(proxy: dict, keep_hosts: set[str]) -> bool:
-    """Keep latency-valid nodes, plus hosts from keep-marked feeds even when tests fail."""
-    if str(proxy["server"]) in keep_hosts:
-        return True
-    if not config_args.discard:
-        return True
-    return sl_from_name(proxy["name"])[1] < test_args.latency_timeout
-
-
 def convert_to_str(config: dict) -> dict:
-    for proxy in config["proxies"]:
-        if not isinstance(proxy["name"], str):
-            proxy["name"] = str(proxy["name"])
-    for group in config["proxy-groups"]:
-        for i in range(len(group["proxies"])):
-            if not isinstance(group["proxies"][i], str):
-                group["proxies"][i] = str(group["proxies"][i])
+    for proxy in config.get("proxies", []):
+        proxy["name"] = str(proxy["name"])
+    for group in config.get("proxy-groups", []):
+        if "proxies" in group:
+            group["proxies"] = [str(name) for name in group["proxies"]]
     return config
 
 
-def test_latency_speed():
-    # in speedtest mode, use the latest profile
-    profile_path = get_newest_profile()
-    config = yaml.safe_load(open(profile_path, "r", encoding="utf-8"))
-    config = convert_to_str(config)
-    proxies = [p["name"] for p in config["proxies"]]
+def generated_test_group(name: str) -> bool:
+    return bool(re.fullmatch(rf"{re.escape(config_args.target_group)} Group [1-9]\d*", name))
 
-    # Find all "节点选择" groups (created by fix.py)
+
+def rebuild_proxy_groups(config: dict, old_proxy_names: set[str], final_names: list[str]) -> None:
+    """Remove test groups and replace node references without relying on group positions."""
+    groups = [
+        group
+        for group in config.get("proxy-groups", [])
+        if not generated_test_group(str(group.get("name", "")))
+    ]
+    group_names = {str(group["name"]) for group in groups}
+    if len(group_names) != len(groups):
+        raise ValueError("Duplicate proxy-group names after removing test groups")
+    if len(final_names) != len(set(final_names)):
+        raise ValueError("Duplicate final proxy names")
+
+    fast_names = [
+        name for name in final_names if float(name.split(" - ", 2)[1]) >= test_args.load_balance_thres
+    ]
+    for group in groups:
+        refs = [str(ref) for ref in group.get("proxies", [])]
+        node_refs = [ref for ref in refs if ref in old_proxy_names and ref not in group_names]
+        if not node_refs:
+            continue
+        static_refs = [ref for ref in refs if ref not in old_proxy_names or ref in group_names]
+        if group.get("type") == "load-balance":
+            replacements = fast_names or final_names[:1]
+            group["strategy"] = config_args.load_balance_strategy
+            group.pop("tolerance", None)
+        else:
+            replacements = final_names
+        group["proxies"] = list(dict.fromkeys(static_refs + replacements)) or ["DIRECT"]
+
+    known = set(final_names) | group_names | BUILTIN_POLICIES
+    dangling = [
+        (str(group["name"]), str(ref))
+        for group in groups
+        for ref in group.get("proxies", [])
+        if str(ref) not in known
+    ]
+    if dangling:
+        preview = ", ".join(f"{group}->{ref}" for group, ref in dangling[:5])
+        raise ValueError(f"Proxy groups contain {len(dangling)} dangling reference(s): {preview}")
+    config["proxy-groups"] = groups
+
+
+def choose_keep_fallbacks(
+    proxies: list[dict],
+    all_valid: dict[str, int],
+    selected: dict[str, tuple[float, int]],
+    keep_hosts: set[str],
+) -> None:
+    """Pinned hosts always retain one endpoint, preferring a latency-valid candidate."""
+    by_host: defaultdict[str, list[dict]] = defaultdict(list)
+    for proxy in proxies:
+        by_host[str(proxy["server"])].append(proxy)
+    selected_hosts = {
+        str(proxy["server"])
+        for proxy in proxies
+        if str(proxy["name"]) in selected
+    }
+    for host in keep_hosts - selected_hosts:
+        candidates = by_host.get(host, [])
+        if not candidates:
+            continue
+        candidates.sort(key=lambda proxy: all_valid.get(str(proxy["name"]), test_args.latency_timeout))
+        name = str(candidates[0]["name"])
+        selected[name] = (0.0, all_valid.get(name, test_args.latency_timeout))
+
+
+def test_latency_speed() -> None:
+    profile_path = get_newest_profile()
+    with open(profile_path, "r", encoding="utf-8") as profile_file:
+        config = convert_to_str(yaml.safe_load(profile_file))
+    proxies = config.get("proxies", [])
+    old_proxy_names = {str(proxy["name"]) for proxy in proxies}
+    name_to_proxy = {str(proxy["name"]): proxy for proxy in proxies}
+    name_to_host = {name: str(proxy["server"]) for name, proxy in name_to_proxy.items()}
+
     selection_groups = [
         group
         for group in config.get("proxy-groups", [])
-        if group["name"].startswith(f"{config_args.target_group} Group")
+        if generated_test_group(str(group.get("name", "")))
     ]
-
     if not selection_groups:
-        raise ValueError(f"No '{config_args.target_group}' groups found")
+        raise ValueError(f"No generated '{config_args.target_group} Group N' groups found")
+    logger.info(f"Testing latency for {len(proxies)} host:port candidates in {len(selection_groups)} groups")
 
-    logger.info(f"Found {len(selection_groups)} proxy selection group(s) to test")
-
-    # Test each group separately and merge results
-    all_valid = {}
-    for i, group in enumerate(selection_groups, 1):
-        group_name = group["name"]
+    all_valid: dict[str, int] = {}
+    for index, group in enumerate(selection_groups, 1):
         proxy_group = group.get("proxies", [])
-        logger.info(
-            f"Testing group {i}/{len(selection_groups)}: {group_name} with {len(proxy_group)} proxies"
-        )
-        valid = get_latency(proxy_group, group_name)
-        logger.info(f"Group {i}/{len(selection_groups)}: got {len(valid)} / {len(proxy_group)} valid proxies")
+        valid = get_latency(proxy_group, str(group["name"]))
         all_valid.update(valid)
+        logger.info(f"Latency group {index}/{len(selection_groups)}: {len(valid)}/{len(proxy_group)} passed")
+    logger.info(f"Latency total: {len(all_valid)}/{len(proxies)} candidates passed")
 
-    logger.info(f"Total: got {len(all_valid)} / {len(proxies)} valid proxies across all groups.")
-    valid = list(sorted(all_valid.items(), key=lambda x: x[1]))
+    valid = sorted(all_valid.items(), key=lambda item: item[1])
+    selected = get_speed(valid, name_to_host)
     keep_hosts = load_keep_hosts(config_args.profile_remote_url_path)
-    if keep_hosts:
-        logger.info(f"Pinning {len(keep_hosts)} keep-feed host(s) after tests")
+    choose_keep_fallbacks(proxies, all_valid, selected, keep_hosts)
 
-    # Update failure database - collect all failures first, then batch update
+    all_hosts = {str(proxy["server"]) for proxy in proxies} - keep_hosts
+    latency_hosts = {name_to_host[name] for name in all_valid} - keep_hosts
+    success_hosts = {name_to_host[name] for name in selected} - keep_hosts
+    latency_failed_hosts = all_hosts - latency_hosts
+    speed_failed_hosts = latency_hosts - success_hosts if test_args.test_speed else set()
+
     failure_db = ProxyFailureDB()
-    failed_proxies: list[str] = []
-    for proxy_dict in config["proxies"]:
-        proxy_name = proxy_dict["name"]
-        host = str(proxy_dict["server"])
-        if host in keep_hosts:
-            continue
+    failure_db.record_successes_batch(sorted(success_hosts))
+    failures_to_record = set(latency_failed_hosts)
+    if should_persist_speed_failures(len(latency_hosts), len(speed_failed_hosts)):
+        failures_to_record |= speed_failed_hosts
+    failure_db.record_failures_batch(sorted(failures_to_record))
+    logger.info(
+        f"Host outcomes: {len(success_hosts)} passed, {len(latency_failed_hosts)} failed latency, "
+        f"{len(speed_failed_hosts)} failed speed, {len(keep_hosts)} pinned"
+    )
 
-        # Check if this proxy failed (not in valid results)
-        if proxy_name not in all_valid:
-            failed_proxies.append(host)
-            logger.debug(f"Will record failure for {proxy_name} ({host})")
+    final_proxies: list[dict] = []
+    for old_name, (speed, latency) in selected.items():
+        proxy = name_to_proxy[old_name]
+        proxy["name"] = measured_name(old_name, speed, latency)
+        final_proxies.append(proxy)
+    final_proxies.sort(key=lambda proxy: score_from_name(str(proxy["name"])))
+    config["proxies"] = final_proxies
+    final_names = [str(proxy["name"]) for proxy in final_proxies]
+    rebuild_proxy_groups(config, old_proxy_names, final_names)
 
-    # Batch record all failures at once
-    if failed_proxies:
-        failure_db.record_failures_batch(failed_proxies)
-
-    name2ls = get_speed(valid)
-
-    # Record failures for proxies that produced no successful throughput sample.
-    # Completed-but-slow results are left in the profile ranking and are not persisted.
-    name_to_proxy = {proxy["name"]: proxy for proxy in config["proxies"]}
-    abort_failures: list[str] = []
-    for proxy_name, (speed, latency) in name2ls.items():
-        if speed == 0:
-            if proxy_name in name_to_proxy:
-                proxy_dict = name_to_proxy[proxy_name]
-                host = str(proxy_dict["server"])
-                if host in keep_hosts:
-                    continue
-                abort_failures.append(host)
-                logger.debug(f"Will record failure for {proxy_name} ({host}): no successful speed sample")
-
-    if should_persist_speed_failures(len(name2ls), len(abort_failures)):
-        failure_db.record_failures_batch(abort_failures)
-
-    replaced_names = replace_name(proxies, name2ls)
-    for new_name, proxy in zip(replaced_names, config["proxies"]):
-        proxy["name"] = new_name
-    config["proxies"] = [proxy for proxy in config["proxies"] if should_retain_proxy(proxy, keep_hosts)]
-    config["proxies"] = sorted(config["proxies"], key=lambda x: sl_from_name(x["name"]))
-    replaced_names = [proxy["name"] for proxy in config["proxies"]]
-    new_groups = []
-    for start, group in zip(test_args.group_proxy_start, config["proxy-groups"]):
-        if start == -1:
-            new_groups.append(group)
-            continue
-        if start == -2:
-            names = list(
-                filter(lambda x: float(x.split(" - ")[1]) >= test_args.load_balance_thres, replaced_names)
-            )
-            group["proxies"] = names if names else [replaced_names[0]]
-            group["strategy"] = config_args.load_balance_strategy
-            group.pop("tolerance", None)
-            new_groups.append(group)
-            continue
-        group["proxies"][start:] = replaced_names
-        new_groups.append(group)
-
-    config["proxy-groups"] = new_groups
-
-    with open(profile_path, "w", encoding="utf-8") as f:
-        f.write(dump_yaml(config))
+    with open(profile_path, "w", encoding="utf-8") as profile_file:
+        profile_file.write(dump_yaml(config))
 
 
 if __name__ == "__main__":

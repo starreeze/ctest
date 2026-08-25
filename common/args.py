@@ -1,4 +1,5 @@
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ class Config:
     profile_remote_url_path: str = field(default="urls.txt")
     controller_url: str = field(default="http://127.0.0.1:9090")
     controller_password: str = field(default="-10123")
+    controller_timeout: float = field(default=10.0)
     proxy_url: str = field(default="http://127.0.0.1:7890")
     discard: bool = field(
         default=True, metadata={"help": "discard the proxies that are not valid in latency test"}
@@ -47,14 +49,9 @@ class Config:
     failure_db_path: str = field(
         default="", metadata={"help": "path to failure tracking database (default: local app data)"}
     )
-    consecutive_failure_threshold: int = field(
-        default=3, metadata={"help": "number of consecutive failures needed to filter out a proxy"}
-    )
-    failure_filter_duration_days: int = field(
-        default=30, metadata={"help": "days to filter out failed proxies"}
-    )
-    failure_dedup_hours: int = field(
-        default=24, metadata={"help": "hours within which multiple failures count as one"}
+    failure_cooldown_days: list[int] = field(
+        default_factory=lambda: [1, 3, 7],
+        metadata={"help": "host cooldown days after the first, second, and later failed runs"},
     )
     min_speed_threshold_kbps: int = field(
         default=512, metadata={"help": "minimum speed in KB/s, below which is considered a failure (512 KB/s = 0.5 MiB/s)"}
@@ -63,6 +60,11 @@ class Config:
         default="round-robin", metadata={"help": "strategy for load-balance proxy groups"}
     )
     meta_start_command: str = field(default="mihomo -d profiles")
+    run_lock_path: str = field(default="/tmp/clash-profile-update.lock")
+    log_level: str = field(default="INFO")
+    log_file: str = field(default="")
+    log_max_bytes: int = field(default=10 * 1024 * 1024)
+    log_backup_count: int = field(default=5)
     global_group: str = field(
         default="GLOBAL", metadata={"help": "built-in group selected while the core is in global mode"}
     )
@@ -136,11 +138,6 @@ class TestArgs:
             "help": "adaptive low-speed fraction that skips failure-DB writes because the shared endpoint looks down"
         },
     )
-    group_proxy_start: list[int] = field(
-        default_factory=lambda: [3, 0, -2, -1, -1, 2, 2, 2, -1, -1, 3],
-        metadata={"help": ">0: start position for proxies; -1: no proxy, copy all; -2: load balance"},
-    )
-    max_num: int = field(default=10, metadata={"help": "stop throughput tests after this many nodes meet --load_balance_thres"})
     load_balance_thres: float = field(
         default=1.0, metadata={"help": "minimum MiB/s score to count as a valid speed-test success / load-balance member"}
     )
@@ -178,18 +175,51 @@ if not config_args.profiles:
     config_args.profiles = [
         os.path.join(config_args.profile_dir, f)
         for f in os.listdir(config_args.profile_dir)
-        if f.endswith(".yaml")
-        or f.endswith(".yml")
+        if (f.endswith(".yaml") or f.endswith(".yml"))
         and os.path.getsize(os.path.join(config_args.profile_dir, f))
         > config_args.profile_size_filter_kb * 1024
     ]
 
-logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]", handlers=[RichHandler()])
+log_level = getattr(logging, config_args.log_level.upper(), None)
+if not isinstance(log_level, int):
+    raise ValueError(f"Invalid log level: {config_args.log_level}")
+handlers: list[logging.Handler] = [RichHandler()]
+if config_args.log_file:
+    file_handler = RotatingFileHandler(
+        config_args.log_file,
+        maxBytes=config_args.log_max_bytes,
+        backupCount=config_args.log_backup_count,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(
+        logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    )
+    handlers.append(file_handler)
+logging.basicConfig(level=log_level, format="%(message)s", datefmt="[%X]", handlers=handlers)
 logger = logging.getLogger("rich")
+
+
+PROXY_ENV_KEYS = (
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+)
+
+
+def clear_proxy_env() -> None:
+    """Remove inherited proxy routing before direct feed or controller requests."""
+    for key in PROXY_ENV_KEYS:
+        os.environ.pop(key, None)
 
 
 def apply_runtime_proxy_env() -> None:
     """Route outbound tests through the local clash mixed port, but keep localhost API direct."""
+    clear_proxy_env()
     os.environ["http_proxy"] = os.environ["HTTP_PROXY"] = config_args.proxy_url
     os.environ["https_proxy"] = os.environ["HTTPS_PROXY"] = config_args.proxy_url
     os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"

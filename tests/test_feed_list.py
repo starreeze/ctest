@@ -2,18 +2,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from common.feeds import load_keep_hosts, parse_feed_list
+from common.feeds import direct_session, load_keep_hosts, parse_feed_list
 from common.utils import rewrite_github_feed_url
 
 
 class FeedListTest(unittest.TestCase):
-    def test_parse_keep_prefix_and_comments(self):
+    def test_direct_feed_session_ignores_proxy_environment(self):
+        self.assertFalse(direct_session.trust_env)
+
+    def test_parse_pin_marker_and_comments(self):
         feeds = parse_feed_list(
             [
                 "# https://example.com/disabled",
                 "",
-                "keep https://raw.githubusercontent.com/starreeze/ctest/main/assets/vultr-deploy.yaml",
-                "KEEP: https://raw.githubusercontent.com/starreeze/ctest/main/assets/nodefiltrate.yaml",
+                "!https://raw.githubusercontent.com/starreeze/ctest/main/assets/vultr-deploy.yaml",
+                "! https://raw.githubusercontent.com/starreeze/ctest/main/assets/nodefiltrate.yaml",
                 "https://raw.githubusercontent.com/anaer/Sub/main/clash.yaml",
             ]
         )
@@ -26,13 +29,11 @@ class FeedListTest(unittest.TestCase):
             ],
         )
 
-    def test_keep_without_url_raises(self):
-        with self.assertRaisesRegex(ValueError, "keep marker is missing"):
-            parse_feed_list(["keep"])
-        with self.assertRaisesRegex(ValueError, "keep marker is missing"):
-            parse_feed_list(["keep:"])
-        with self.assertRaisesRegex(ValueError, "keep marker is missing"):
-            parse_feed_list(["keep # https://example.com"])
+    def test_pin_marker_without_url_raises(self):
+        with self.assertRaisesRegex(ValueError, "pin marker is missing"):
+            parse_feed_list(["!"])
+        with self.assertRaisesRegex(ValueError, "pin marker is missing"):
+            parse_feed_list(["! # https://example.com"])
 
     def test_keep_hosts_load_from_local_github_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -44,7 +45,7 @@ class FeedListTest(unittest.TestCase):
             )
             urls = Path(tmp) / "urls.txt"
             urls.write_text(
-                "keep https://raw.githubusercontent.com/starreeze/ctest/main/assets/pin.yaml\n"
+                "!https://raw.githubusercontent.com/starreeze/ctest/main/assets/pin.yaml\n"
                 "https://raw.githubusercontent.com/anaer/Sub/main/clash.yaml\n",
                 encoding="utf-8",
             )

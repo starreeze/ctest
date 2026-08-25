@@ -26,7 +26,7 @@ You can also modify more arguments there. -->
 python main.py
 ```
 
-It will by default **overwrite** your latest profile using links specified in urls.txt. Keep `urls.txt` in raw GitHub form; GitHub raw, `github.com/.../blob|raw/`, and `cdn.jsdelivr.net` feeds are rewritten to `fastly.jsdelivr.net` before conversion so `api.v1.mk` can fetch them. Prefix a line with `keep ` to pin that feed's hosts: they are still tested, but they are not dropped for consecutive failures or a latency timeout. Conversion backends are tried in order (`api.v1.mk`, then bianyuan) until a valid clash YAML is returned; HTML/error pages are never written. Bianyuan is the legacy fallback and may drop VLESS/hy2/TUIC. Since some of the naming conventions are not recognized by clash meta, automatic fix will be done.
+It will by default **overwrite** your latest profile using links specified in urls.txt. Keep `urls.txt` in raw GitHub form; GitHub raw, `github.com/.../blob|raw/`, and `cdn.jsdelivr.net` feeds are rewritten to `fastly.jsdelivr.net` before conversion so `api.v1.mk` can fetch them. Prefix a line with `!` to pin that feed's hosts: they are still tested, but they are not dropped for consecutive failures or a latency timeout. Conversion backends are tried in order (`api.v1.mk`, then bianyuan) until a valid clash YAML is returned; HTML/error pages are never written. Bianyuan is the legacy fallback and may drop VLESS/hy2/TUIC. Since some of the naming conventions are not recognized by clash meta, automatic fix will be done.
 
 You need to manually reactivate your profile before pressing ENTER to run latency test (unless `--mode meta`). Speed test is enabled by default; pass `--test_speed False` to skip it.
 
@@ -44,7 +44,7 @@ After completion, reactivate your clash profile.
 
 ### Speed test
 
-The speed test script latency-tests the profile's generated test groups. It then throughput-tests latency-sorted nodes until `--max_num` nodes meet `--load_balance_thres` (defaults: 10 nodes at 1 MiB/s), and adds latency and speed information to their names.
+The speed test script latency-tests every host:port candidate. For each host it throughput-tests survivors in latency order and stops at the first endpoint with positive traffic, then adds latency and speed information to that winning endpoint's name.
 
 Make sure that your clash profile is constructed by [subconverter](https://github.com/tindy2013/subconverter) which uses the [external config](https://github.com/tindy2013/subconverter/blob/master/README-cn.md#%E8%B0%83%E7%94%A8%E8%AF%B4%E6%98%8E-%E8%BF%9B%E9%98%B6) from https://fastly.jsdelivr.net/gh/starreeze/blogimage@main/subconverter/external.ini. You may also need to check the external controller port and the proxy mixed port in your clash settings. You can either modify the `args.py` or modify the settings upon difference.
 
@@ -74,7 +74,9 @@ This penalizes flaky endpoints and avoids ranking a node by one lucky peak. Eigh
 
 During throughput tests the core is switched to `global` mode and the node is selected on both `GLOBAL` and `--target_group`, then the previous mode is restored. That keeps mixed-port measurement traffic on the node being tested instead of following Clash rules.
 
-Nodes with **no successful sample** (timeout/connect/0.00 MiB/s) are written to the failure database, keyed by host (not host:port). Completed-but-slow nodes stay in the profile ranking and are not persisted. In adaptive mode, if at least `--speed_outage_min_samples` nodes are tested and **every** one aborted, those writes are skipped because the shared measurement endpoint itself is likely down. Dedup during `fix` uses the same host key, so extra ports on a host that already failed are dropped together.
+In meta mode, the test core uses a temporary copy of the profile. Only the configured HTTP proxy and controller are bound on localhost; SOCKS, DNS, TUN, redirection, and transparent-proxy listeners are disabled so the test cannot claim unrelated local ports. Deprecated DNS `fallback-filter.geosite` routing is migrated to `nameserver-policy` while preserving the same fallback resolvers.
+
+Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward until one produces positive traffic; that winner represents the host in the final profile. Failed hosts enter a 1/3/7-day cooldown, keyed by host, and any later success clears the streak. In adaptive mode, speed-derived failure writes are skipped when the configured failure ratio indicates that the shared measurement endpoint itself is likely down.
 
 `--speed_test_url` must use HTTPS. One HTTPS redirect is followed; an HTTP hop or a second redirect fails the probe. Requests send `Referer` set to the URL origin so Cloudflare `__down` accepts 16 MiB probes. The URL may contain a `{bytes}` placeholder, or point to a fixed object on a server that supports byte ranges. Prefer an endpoint you operate if repeatability matters; public endpoints add server and peering variability.
 

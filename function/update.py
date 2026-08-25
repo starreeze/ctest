@@ -14,6 +14,8 @@ from common.feeds import load_enabled_feeds
 from common.utils import decode_subconverter_body, load_raw_clash_yaml, rewrite_github_feed_url
 
 META_PROXY_TYPES = {"vless", "hysteria", "hysteria2", "tuic", "wireguard", "anytls", "ssh", "mieru"}
+direct_session = requests.Session()
+direct_session.trust_env = False
 
 
 def log_proxy_inventory(proxies: list[dict], label: str) -> None:
@@ -35,12 +37,11 @@ def fetch_converted_profile(feed_urls: list[str], config_url: str) -> str:
     for base_url in args.subconvert_base_urls:
         logger.info(f"Fetching converted profile from {base_url} ({len(feed_urls)} feeds)")
         try:
-            response = requests.get(
+            response = direct_session.get(
                 base_url,
                 params={"url": merged, "config": config_url, "emoji": "true"},
                 timeout=args.subconvert_timeout,
                 headers={"User-Agent": args.subconvert_user_agent},
-                proxies={"http": None, "https": None},
             )
             response.raise_for_status()
             content, replaced = decode_subconverter_body(response.content)

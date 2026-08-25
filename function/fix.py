@@ -48,6 +48,29 @@ def preprocess_profile(profile: str) -> dict:
     return in_yaml
 
 
+def migrate_deprecated_dns_geosite(profile: dict) -> None:
+    """Move fallback-filter geosite routing into nameserver-policy."""
+    dns = profile.get("dns")
+    if not isinstance(dns, dict):
+        return
+    fallback_filter = dns.get("fallback-filter")
+    if not isinstance(fallback_filter, dict) or "geosite" not in fallback_filter:
+        return
+    fallback_nameservers = dns.get("fallback")
+    if not fallback_nameservers:
+        raise ValueError("dns.fallback-filter.geosite requires dns.fallback for migration")
+    geosites = fallback_filter.pop("geosite")
+    if isinstance(geosites, str):
+        geosites = [geosites]
+    nameserver_policy = dns.setdefault("nameserver-policy", {})
+    for geosite in geosites:
+        key = str(geosite)
+        if not key.startswith("geosite:"):
+            key = f"geosite:{key}"
+        nameserver_policy.setdefault(key, list(fallback_nameservers))
+    logger.info(f"Migrated {len(geosites)} deprecated DNS geosite rule(s) to nameserver-policy")
+
+
 def apply_failure_filter(
     proxies: list[dict], filtered_hosts: set[str], keep_hosts: set[str]
 ) -> tuple[list[dict], list[str]]:
@@ -58,7 +81,6 @@ def apply_failure_filter(
         host = str(proxy["server"])
         if host in filtered_hosts and host not in keep_hosts:
             dropped_names.append(proxy["name"])
-            logger.debug(f"Filtering proxy {proxy['name']} ({host}) due to consecutive failures")
             continue
         if host in filtered_hosts:
             logger.info(f"Keeping pinned proxy {proxy['name']} ({host}) despite failure history")
@@ -112,19 +134,26 @@ def build_conflict_name(original_name: str, proxy: dict, used_names: set[str]) -
         suffix += 1
 
 
-def handle_redundant_and_conflicts(proxies: list[dict]) -> tuple[list[dict], dict[str, str], set[str]]:
-    """
-    Remove redundant proxies (same host) and rename conflicting names.
+def endpoint_key(proxy: dict) -> tuple[str, int]:
+    """Candidate identity: normalized host plus port."""
+    return str(proxy["server"]).lower().rstrip("."), int(proxy["port"])
 
-    - For redundant entries (different names, same host): keep only the first one
+
+def handle_redundant_and_conflicts(
+    proxies: list[dict],
+) -> tuple[list[dict], dict[tuple[str, int], str], set[str]]:
+    """
+    Remove redundant proxies (same host:port) and rename conflicting names.
+
+    - For redundant entries (different names, same host:port): keep only the first one
     - For conflict names (same name, different host): rename duplicates with an endpoint/provider label
 
     Returns:
-        tuple: (filtered_proxies, host_to_name, skipped_names)
+        tuple: (filtered_proxies, endpoint_to_name, skipped_names)
     """
-    host_to_proxy: dict[str, dict] = {}
-    name_to_host: dict[str, str] = {}
-    host_to_name: dict[str, str] = {}
+    endpoint_to_proxy: dict[tuple[str, int], dict] = {}
+    name_to_endpoint: dict[str, tuple[str, int]] = {}
+    endpoint_to_name: dict[tuple[str, int], str] = {}
     used_names: set[str] = set()
     skipped_names: set[str] = set()
 
@@ -132,37 +161,35 @@ def handle_redundant_and_conflicts(proxies: list[dict]) -> tuple[list[dict], dic
 
     for proxy in proxies:
         original_name = proxy["name"]
-        host = str(proxy["server"])
+        endpoint = endpoint_key(proxy)
 
-        if host in host_to_proxy:
-            if original_name != host_to_proxy[host]["name"]:
+        if endpoint in endpoint_to_proxy:
+            if original_name != endpoint_to_proxy[endpoint]["name"]:
                 skipped_names.add(original_name)
-            logger.debug(
-                f"Skipping redundant proxy: {original_name} (duplicate of {host_to_proxy[host]['name']})"
-            )
             continue
 
-        if original_name in name_to_host:
-            if name_to_host[original_name] != host:
+        if original_name in name_to_endpoint:
+            if name_to_endpoint[original_name] != endpoint:
                 new_name = build_conflict_name(original_name, proxy, used_names)
-                logger.debug(f"Renaming conflicting proxy: {original_name} -> {new_name}")
                 proxy = proxy.copy()
                 proxy["name"] = new_name
-                name_to_host[new_name] = host
-                host_to_name[host] = new_name
+                name_to_endpoint[new_name] = endpoint
+                endpoint_to_name[endpoint] = new_name
         else:
-            name_to_host[original_name] = host
-            host_to_name[host] = original_name
+            name_to_endpoint[original_name] = endpoint
+            endpoint_to_name[endpoint] = original_name
 
-        host_to_proxy[host] = proxy
+        endpoint_to_proxy[endpoint] = proxy
         used_names.add(proxy["name"])
         result.append(proxy)
 
-    return result, host_to_name, skipped_names
+    return result, endpoint_to_name, skipped_names
 
 
 def update_proxy_references(
-    data: dict, original_proxies: list[dict], removed_names: set[str], host_to_name: dict[str, str]
+    data: dict,
+    original_proxies: list[dict],
+    endpoint_to_name: dict[tuple[str, int], str],
 ) -> None:
     """
     Update all references to proxy names throughout the profile.
@@ -170,48 +197,31 @@ def update_proxy_references(
     Args:
         data: The profile dictionary
         original_proxies: The original list of proxies before filtering
-        removed_names: Set of proxy names that were removed
-        host_to_name: Maps server address to final proxy name
+        endpoint_to_name: Maps retained host:port identities to final proxy names
     """
     if "proxy-groups" not in data:
         return
 
-    name_occurrences = defaultdict(list)
+    name_occurrences: defaultdict[str, list[tuple[str, int]]] = defaultdict(list)
     for proxy in original_proxies:
-        name_occurrences[proxy["name"]].append(str(proxy["server"]))
+        name_occurrences[str(proxy["name"])].append(endpoint_key(proxy))
 
     for group in data["proxy-groups"]:
         if "proxies" in group:
-            updated_proxies = []
+            updated_proxies: list[str] = []
             occurrence_counter = defaultdict(int)
 
             for proxy_name in group["proxies"]:
-                if proxy_name in removed_names:
-                    logger.debug(
-                        f"Removing reference to deleted proxy '{proxy_name}' from group '{group['name']}'"
-                    )
-                    continue
-
                 occurrences = name_occurrences.get(proxy_name, [])
                 if occurrence_counter[proxy_name] < len(occurrences):
-                    host = occurrences[occurrence_counter[proxy_name]]
+                    endpoint = occurrences[occurrence_counter[proxy_name]]
                     occurrence_counter[proxy_name] += 1
-
-                    if host in host_to_name:
-                        final_name = host_to_name[host]
-                        if final_name != proxy_name:
-                            logger.debug(
-                                f"Updating reference '{proxy_name}' -> '{final_name}' in group '{group['name']}'"
-                            )
-                        updated_proxies.append(final_name)
-                    else:
-                        logger.debug(
-                            f"Removing reference to deleted proxy '{proxy_name}' (host not found) from group '{group['name']}'"
-                        )
+                    if endpoint in endpoint_to_name:
+                        updated_proxies.append(endpoint_to_name[endpoint])
                 else:
                     updated_proxies.append(proxy_name)
 
-            group["proxies"] = updated_proxies
+            group["proxies"] = list(dict.fromkeys(updated_proxies))
 
 
 _CORE_PROXY_ERROR = re.compile(r"proxy (\d+):\s*(.+)")
@@ -270,29 +280,8 @@ def fix(profile_path: str):
 
     # Parse YAML
     profile_dict = preprocess_profile(profile)
+    migrate_deprecated_dns_geosite(profile_dict)
     original_proxies = profile_dict.get("proxies", [])
-
-    # Load failure database and filter out proxies with too many consecutive failures
-    failure_db = ProxyFailureDB()
-    failure_db.cleanup_expired()  # Clean up expired entries first
-    filtered_by_failures = failure_db.get_filtered_proxies()
-    keep_hosts = load_keep_hosts(args.profile_remote_url_path)
-    if keep_hosts:
-        logger.info(f"Pinning {len(keep_hosts)} keep-feed host(s): {sorted(keep_hosts)}")
-
-    if filtered_by_failures:
-        logger.info(f"Filtering {len(filtered_by_failures)} proxies due to consecutive failures")
-
-    # Filter proxies based on failure history
-    proxies_after_failure_filter, failure_filtered_names = apply_failure_filter(
-        original_proxies, filtered_by_failures, keep_hosts
-    )
-
-    if failure_filtered_names:
-        logger.info(f"Removed {len(failure_filtered_names)} proxies due to failure history")
-
-    # Use filtered list for subsequent processing
-    original_proxies = proxies_after_failure_filter
 
     # Step 1: Filter out unsupported proxies
     unsupported_names = []
@@ -303,19 +292,32 @@ def fix(profile_path: str):
         else:
             supported_proxies.append(proxy)
 
-    logger.info(f"Removing {len(unsupported_names)} unsupported proxies: {unsupported_names}")
+    logger.info(f"Removed {len(unsupported_names)} unsupported proxies")
+
+    # A cooling host is excluded until its 1/3/7-day retry time, except pinned feeds.
+    failure_db = ProxyFailureDB()
+    filtered_by_failures = failure_db.get_filtered_proxies()
+    keep_hosts = load_keep_hosts(args.profile_remote_url_path)
+    proxies_after_failure_filter, failure_filtered_names = apply_failure_filter(
+        supported_proxies, filtered_by_failures, keep_hosts
+    )
+    logger.info(
+        f"Cooldown filter removed {len(failure_filtered_names)} proxies across "
+        f"{len(filtered_by_failures - keep_hosts)} host(s)"
+    )
 
     # Step 2: Handle redundant and conflict names
-    initial_count = len(supported_proxies)
-    fixed_proxies, host_to_name, skipped_names = handle_redundant_and_conflicts(supported_proxies)
+    initial_count = len(proxies_after_failure_filter)
+    fixed_proxies, endpoint_to_name, skipped_names = handle_redundant_and_conflicts(
+        proxies_after_failure_filter
+    )
     redundant_count = initial_count - len(fixed_proxies)
 
     logger.info(f"Removed {redundant_count} redundant proxies")
     logger.info(f"Final proxy count: {len(fixed_proxies)}")
 
     # Step 3: Update all references throughout the profile
-    removed_names = set(unsupported_names) | set(failure_filtered_names) | skipped_names
-    update_proxy_references(profile_dict, original_proxies, removed_names, host_to_name)
+    update_proxy_references(profile_dict, original_proxies, endpoint_to_name)
 
     # Update the profile dict
     profile_dict["proxies"] = fixed_proxies
