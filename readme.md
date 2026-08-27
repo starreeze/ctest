@@ -32,6 +32,8 @@ You need to manually reactivate your profile before pressing ENTER to run latenc
 
 After finishing, reactivate your profile again. The proxy names now have their latency and speed info on them: `{latency_ms} - {download_MiBps} - {original_name}`. They are sorted by downloading speed by default.
 
+The final profile moves its existing `load-balance` group to the first position in the configured target selector. Because Mihomo selects the first entry by default, non-CN/non-ad rules routed through that selector use load balancing immediately when the generated profile is served directly with `mihomo -d ... -f ...`; manual selection remains available. The group is identified by `type: load-balance`, so this does not depend on its display name.
+
 Each full or directly launched `fix`/`speed` run appends a compact JSONL summary after it succeeds or fails. See [Run history](docs/run-history.md) for the location, fields, and cron/manual origin controls.
 
 Below are some separate functions for reference only and you may not need them.
@@ -76,7 +78,7 @@ This penalizes flaky endpoints and avoids ranking a node by one lucky peak. Eigh
 
 During throughput tests the core is switched to `global` mode and the node is selected on both `GLOBAL` and `--target_group`, then the previous mode is restored. That keeps mixed-port measurement traffic on the node being tested instead of following Clash rules.
 
-In meta mode, the test core uses a temporary copy of the profile. Only the configured HTTP proxy and controller are bound on localhost; SOCKS, DNS, TUN, redirection, and transparent-proxy listeners are disabled so the test cannot claim unrelated local ports. Deprecated DNS `fallback-filter.geosite` routing is migrated to `nameserver-policy` while preserving the same fallback resolvers.
+In meta mode, the test core uses a temporary copy of the profile. Its localhost HTTP listener uses an OS-selected free port instead of the configured proxy port (commonly `7890`), so an already-running local proxy does not conflict with latency or speed testing. The measurement proxy URL is redirected to that port only for the test core's lifetime and restored when the core stops. Only this HTTP listener and the configured controller are enabled; SOCKS, DNS, TUN, redirection, and transparent-proxy listeners are disabled so the test cannot claim unrelated local ports. Deprecated DNS `fallback-filter.geosite` routing is migrated to `nameserver-policy` while preserving the same fallback resolvers.
 
 Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward. Testing stops at the first `N/A` measurement or numeric score greater than or equal to `--speed_retain_min_mibps`. `N/A` means latency worked but the configured throughput endpoint did not produce a measurement; it is always retained, always avoids cooldown, and is never placed in a load-balance group. Numeric scores use three independent inclusive thresholds:
 

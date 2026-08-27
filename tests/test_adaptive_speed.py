@@ -401,19 +401,27 @@ class AdaptiveSpeedTests(unittest.TestCase):
             lifecycle = self.api.MetaLifecycle()
             with patch.object(self.api.subprocess, "Popen", return_value=process) as popen, patch.object(
                 self.api.controller_session, "get", return_value=ready
-            ), patch.object(self.api.os, "killpg"):
+            ), patch.object(self.api, "find_available_http_port", return_value=45678), patch.object(
+                self.api.os, "killpg"
+            ):
                 lifecycle.start(source)
                 test_path = lifecycle.test_profile_path
                 with open(test_path, encoding="utf-8") as test_file:
                     isolated = yaml.safe_load(test_file)
-                self.assertEqual(isolated["port"], 7890)
+                self.assertEqual(isolated["port"], 45678)
                 self.assertEqual(isolated["socks-port"], 0)
                 self.assertEqual(isolated["mixed-port"], 0)
                 self.assertFalse(isolated["allow-lan"])
                 self.assertEqual(isolated["bind-address"], "127.0.0.1")
                 self.assertFalse(isolated["dns"]["enable"])
+                self.assertEqual(
+                    self.args_module.config_args.proxy_url, "http://127.0.0.1:45678"
+                )
                 self.assertEqual(popen.call_args.args[0][-2:], ["-f", test_path])
                 lifecycle.stop()
+                self.assertEqual(
+                    self.args_module.config_args.proxy_url, "http://127.0.0.1:7890"
+                )
             self.assertFalse(os.path.exists(test_path))
 
     def test_get_speed_switches_to_global_and_restores(self):
@@ -554,6 +562,16 @@ class AdaptiveSpeedTests(unittest.TestCase):
                             }
                         ],
                         "proxy-groups": [
+                            {
+                                "name": "select",
+                                "type": "select",
+                                "proxies": ["balance", "dead"],
+                            },
+                            {
+                                "name": "balance",
+                                "type": "load-balance",
+                                "proxies": ["dead"],
+                            },
                             {"name": "select Group 1", "type": "select", "proxies": ["dead"]}
                         ],
                     },
@@ -601,6 +619,37 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.assertEqual([group["name"] for group in config["proxy-groups"]], ["static", "service", "balance"])
         self.assertEqual(config["proxy-groups"][1]["proxies"], ["static", *final])
         self.assertEqual(config["proxy-groups"][2]["proxies"], [final[0]])
+
+    def test_target_group_defaults_to_existing_load_balance_group(self):
+        config = {
+            "proxy-groups": [
+                {
+                    "name": "select",
+                    "type": "select",
+                    "proxies": ["automatic", "balance", "DIRECT"],
+                },
+                {"name": "automatic", "type": "url-test", "proxies": ["node"]},
+                {"name": "balance", "type": "load-balance", "proxies": ["node"]},
+            ]
+        }
+
+        self.assertTrue(self.speed.prefer_load_balance_default(config))
+        self.assertEqual(
+            config["proxy-groups"][0]["proxies"],
+            ["balance", "automatic", "DIRECT"],
+        )
+
+    def test_target_group_requires_a_load_balance_reference(self):
+        config = {
+            "proxy-groups": [
+                {"name": "select", "type": "select", "proxies": ["automatic"]},
+                {"name": "automatic", "type": "url-test", "proxies": ["node"]},
+                {"name": "balance", "type": "load-balance", "proxies": ["node"]},
+            ]
+        }
+
+        with self.assertRaisesRegex(ValueError, "does not reference a load-balance group"):
+            self.speed.prefer_load_balance_default(config)
 
     def test_na_is_stripped_on_rerun_sorted_last_and_excluded_from_load_balance(self):
         old = {"old-a", "old-b"}

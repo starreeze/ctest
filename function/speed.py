@@ -75,6 +75,33 @@ def generated_test_group(name: str) -> bool:
     return bool(re.fullmatch(rf"{re.escape(config_args.target_group)} Group [1-9]\d*", name))
 
 
+def prefer_load_balance_default(config: dict) -> bool:
+    """Make the target selector choose its existing load-balance group by default."""
+    groups = config.get("proxy-groups", [])
+    target_group = next(
+        (group for group in groups if str(group.get("name", "")) == config_args.target_group),
+        None,
+    )
+    if target_group is None:
+        raise ValueError(f"Target group {config_args.target_group!r} is missing")
+
+    load_balance_names = {
+        str(group["name"])
+        for group in groups
+        if group.get("type") == "load-balance"
+    }
+    refs = [str(ref) for ref in target_group.get("proxies", [])]
+    load_balance_refs = [ref for ref in refs if ref in load_balance_names]
+    if not load_balance_refs:
+        raise ValueError(
+            f"Target group {config_args.target_group!r} does not reference a load-balance group"
+        )
+    target_group["proxies"] = load_balance_refs + [
+        ref for ref in refs if ref not in load_balance_names
+    ]
+    return True
+
+
 def rebuild_proxy_groups(
     config: dict,
     old_proxy_names: set[str],
@@ -229,6 +256,7 @@ def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
     config["proxies"] = final_proxies
     final_names = [str(proxy["name"]) for proxy in final_proxies]
     rebuild_proxy_groups(config, old_proxy_names, final_names, final_speeds)
+    prefer_load_balance_default(config)
 
     with open(profile_path, "w", encoding="utf-8") as profile_file:
         profile_file.write(dump_yaml(config))

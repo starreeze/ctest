@@ -5,6 +5,7 @@
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -28,6 +29,16 @@ controller_session = requests.Session()
 controller_session.trust_env = False
 MEBIBYTE = 1024 * 1024
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+def find_available_http_port(excluded_port: int) -> int:
+    """Ask the OS for an unused localhost TCP port distinct from the configured listener."""
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+            candidate.bind(("127.0.0.1", 0))
+            port = candidate.getsockname()[1]
+        if port != excluded_port:
+            return port
 
 
 def get(*args, **kwargs):
@@ -468,6 +479,7 @@ class MetaLifecycle:
     def __init__(self):
         self.process: subprocess.Popen | None = None
         self.test_profile_path: str | None = None
+        self.original_proxy_url: str | None = None
 
     def start(self, profile_path: str) -> None:
         with open(profile_path, encoding="utf-8") as profile_file:
@@ -480,9 +492,10 @@ class MetaLifecycle:
         if controller_url.scheme != "http" or not controller_url.hostname or not controller_url.port:
             raise ValueError("meta mode requires an http controller_url with an explicit host and port")
 
+        test_proxy_port = find_available_http_port(proxy_url.port)
         for key in ("mixed-port", "socks-port", "redir-port", "tproxy-port"):
             profile[key] = 0
-        profile["port"] = proxy_url.port
+        profile["port"] = test_proxy_port
         profile["allow-lan"] = False
         profile["bind-address"] = "127.0.0.1"
         profile["external-controller"] = f"{controller_url.hostname}:{controller_url.port}"
@@ -509,7 +522,9 @@ class MetaLifecycle:
                     f"{config_args.controller_url}/version", headers=header, timeout=1
                 )
                 if resp.ok:
-                    logger.info("Mihomo controller is ready")
+                    self.original_proxy_url = config_args.proxy_url
+                    config_args.proxy_url = f"http://127.0.0.1:{test_proxy_port}"
+                    logger.info(f"Mihomo controller is ready; test proxy uses port {test_proxy_port}")
                     return
             except requests.RequestException:
                 pass
@@ -531,3 +546,6 @@ class MetaLifecycle:
             if self.test_profile_path is not None:
                 os.unlink(self.test_profile_path)
                 self.test_profile_path = None
+            if self.original_proxy_url is not None:
+                config_args.proxy_url = self.original_proxy_url
+                self.original_proxy_url = None
