@@ -23,6 +23,10 @@ class Config:
     controller_password: str = field(default="-10123")
     controller_timeout: float = field(default=10.0)
     proxy_url: str = field(default="http://127.0.0.1:7890")
+    mixed_port: int = field(
+        default=7890,
+        metadata={"help": "mixed HTTP/SOCKS listener port written to the final profile"},
+    )
     discard: bool = field(
         default=True, metadata={"help": "discard the proxies that are not valid in latency test"}
     )
@@ -140,16 +144,12 @@ class TestArgs:
         },
     )
     speed_http_deadline_rate_kibps: int = field(
-        default=0,
+        default=512,
         metadata={
             "help": "KiB/s rate used only to tighten adaptive probe deadlines; 0 uses the full wall-time cap"
         },
     )
     speed_http_chunk_size_kb: int = field(default=64)
-    speed_http_ramp_fail_factor: float = field(
-        default=0.85,
-        metadata={"help": "multiply the adaptive score when a larger ramp size fails and a smaller size is reused"},
-    )
     speed_outage_min_samples: int = field(
         default=5,
         metadata={"help": "minimum adaptive speed samples before treating a high fail rate as an endpoint outage"},

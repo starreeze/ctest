@@ -25,4 +25,6 @@ python main.py \
 
 The file is append-only and protected with an exclusive file lock. A terminal record is flushed and synced before the command reports completion, so cron/manual comparisons do not depend on reconstructing outcomes from rotated prose logs.
 
+For full-pipeline runs, a failed terminal record also means the selected profile was restored to its pre-run contents. Completed stage metrics remain in history for diagnosis even though their intermediate profile mutations were rolled back.
+
 Sensitive argument values are redacted before persistence. In particular, both `--controller_password VALUE` and `--controller_password=VALUE` retain the option name but store `[REDACTED]` instead of the secret. Locking uses `fcntl` on Unix and `msvcrt` on Windows through a sidecar `.lock` file; the lock file contains no run data.

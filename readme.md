@@ -30,7 +30,7 @@ It will by default **overwrite** your latest profile using links specified in ur
 
 You need to manually reactivate your profile before pressing ENTER to run latency test (unless `--mode meta`). Speed test is enabled by default; pass `--test_speed False` to skip it.
 
-After finishing, reactivate your profile again. The proxy names now have their latency and speed info on them: `{latency_ms} - {download_MiBps} - {original_name}`. They are sorted by downloading speed by default.
+After finishing, reactivate your profile again. Proxy names contain `{latency_ms} - {download_MiBps|N/A} - {stability%|N/A} - {original_name}`. They are sorted by throughput, stability, and latency, in that order. The final profile exposes one mixed HTTP/SOCKS listener on `--mixed_port` (default `7890`) and disables the separate HTTP-only and SOCKS-only listeners.
 
 The final profile moves its existing `load-balance` group to the first position in the configured target selector. Because Mihomo selects the first entry by default, non-CN/non-ad rules routed through that selector use load balancing immediately when the generated profile is served directly with `mihomo -d ... -f ...`; manual selection remains available. The group is identified by `type: load-balance`, so this does not depend on its display name.
 
@@ -48,7 +48,7 @@ After completion, reactivate your clash profile.
 
 ### Speed test
 
-The speed test script latency-tests every host:port candidate. For each host it throughput-tests survivors in latency order and stops at the first `N/A` result or numeric score meeting the retention threshold, then adds latency and speed information to that endpoint's name.
+The speed test script latency-tests every host:port candidate. For each host it throughput-tests survivors in latency order and stops at the first `N/A` result or numeric score meeting the retention threshold, then adds latency, throughput, and stability information to that endpoint's name.
 
 Make sure that your clash profile is constructed by [subconverter](https://github.com/tindy2013/subconverter) which uses the [external config](https://github.com/tindy2013/subconverter/blob/master/README-cn.md#%E8%B0%83%E7%94%A8%E8%AF%B4%E6%98%8E-%E8%BF%9B%E9%98%B6) from https://fastly.jsdelivr.net/gh/starreeze/blogimage@main/subconverter/external.ini. You may also need to check the external controller port and the proxy mixed port in your clash settings. You can either modify the `args.py` or modify the settings upon difference.
 
@@ -66,21 +66,25 @@ Speed test defaults to `--speed_test_mode adaptive` (HTTPS download through the 
 python -m function.speed --speed_test_mode sdk
 ```
 
-Adaptive mode uses `https://speed.cloudflare.com/__down?bytes={bytes}` by default. It ramps through 1, 4, 8, and 16 MiB probes until the response body takes at least three seconds, then collects two measurements at that size. Connection setup/TTFB is logged separately from body goodput. `--speed_http_deadline_rate_kibps 0` gives every probe the bounded `--speed_http_max_transfer_seconds` wall-clock budget (default 30 s). A positive deadline rate tightens the budget to `--speed_http_connect_overhead + size / rate`, capped by the same maximum; for example, `--speed_http_deadline_rate_kibps 512` produces **7 / 13 / 21 / 30 s** budgets for the default sizes. This setting controls time only and is not an acceptance threshold. The stored score is:
+Adaptive mode uses `https://speed.cloudflare.com/__down?bytes={bytes}` by default. It ramps through 1, 4, 8, and 16 MiB probes until the response body takes at least three seconds, then collects two measurements at that size. Connection setup/TTFB is logged separately from body goodput. The default `--speed_http_deadline_rate_kibps 512` tightens each probe budget to `--speed_http_connect_overhead + size / rate`, capped by `--speed_http_max_transfer_seconds`; this produces **7 / 13 / 21 / 30 s** budgets for the default sizes. Setting the deadline rate to `0` gives every probe the full 30-second cap. This setting controls time only and is not an acceptance threshold.
+
+A probe that receives any body bytes produces a goodput sample even if it times out or ends before the requested size. A zero-byte probe is unavailable. Throughput and stability are independent:
 
 ```text
-successful trial fraction * p25(successful body goodput in MiB/s)
+stability = positive-byte probes / all attempted probes
 ```
 
-If a larger ramp size fails after a smaller size succeeded, the smaller size is reused and the score is multiplied by `--speed_http_ramp_fail_factor` (default `0.85`). `--speed_test_retry` applies only to `sdk` mode; adaptive retries are `--speed_http_trials` at the selected size.
+Each attempted size tier first reduces its positive-byte samples with `--speed_http_percentile`. The final throughput is a weighted sum of those tier values, with base weights proportional to the square root of requested size. A zero-byte tier transfers its weight to the nearest available tier by logarithmic size distance, splitting equally on a tie. Unattempted tiers carry no weight. This gives larger, less startup-sensitive blocks more influence without allowing the largest block to dominate, and keeps availability out of the throughput score. `--speed_test_retry` applies only to `sdk` mode; adaptive retries are `--speed_http_trials` at the selected size.
 
 This penalizes flaky endpoints and avoids ranking a node by one lucky peak. Eight MiB is sufficient when its body transfer lasts roughly three seconds. Faster nodes automatically move to 16 MiB; slow nodes stop earlier. A long connection setup alone does not trigger a larger payload because it is measured as TTFB, not body-transfer time. With defaults, a node that stops at 8 MiB transfers at most 21 MiB across the ramp and trials; a node that reaches 16 MiB can transfer at most 45 MiB.
 
 During throughput tests the core is switched to `global` mode and the node is selected on both `GLOBAL` and `--target_group`, then the previous mode is restored. That keeps mixed-port measurement traffic on the node being tested instead of following Clash rules.
 
+The full pipeline snapshots the selected profile before the update stage. If update, fix, latency, or throughput processing raises an error, the original profile is restored atomically instead of leaving converter output or temporary test groups active. A successful run removes the snapshot after writing the final profile.
+
 In meta mode, the test core uses a temporary copy of the profile. Its localhost HTTP listener uses an OS-selected free port instead of the configured proxy port (commonly `7890`), so an already-running local proxy does not conflict with latency or speed testing. The measurement proxy URL is redirected to that port only for the test core's lifetime and restored when the core stops. Only this HTTP listener and the configured controller are enabled; SOCKS, DNS, TUN, redirection, and transparent-proxy listeners are disabled so the test cannot claim unrelated local ports. Deprecated DNS `fallback-filter.geosite` routing is migrated to `nameserver-policy` while preserving the same fallback resolvers.
 
-Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward. Testing stops at the first `N/A` measurement or numeric score greater than or equal to `--speed_retain_min_mibps`. `N/A` means latency worked but the configured throughput endpoint did not produce a measurement; it is always retained, always avoids cooldown, and is never placed in a load-balance group. Numeric scores use three independent inclusive thresholds:
+Candidates are deduplicated by host:port and all receive latency tests. For each host, latency-valid endpoints are speed-tested from lowest latency upward. Testing stops at the first `N/A` measurement or numeric score greater than or equal to `--speed_retain_min_mibps`. When every probe receives zero bytes, both throughput and stability are `N/A`; the endpoint is always retained, always avoids cooldown, and is never placed in a load-balance group. Stability is informational and does not affect retention, cooldown, or load-balance membership. Numeric throughput scores use three independent inclusive thresholds:
 
 - `--speed_retain_min_mibps` (default `0`) controls profile retention.
 - `--speed_avoid_cooldown_min_mibps` (default `0`) prevents a host from entering the failure cooldown even when no endpoint meets the retain threshold.
@@ -102,8 +106,7 @@ The main adaptive controls are:
 --speed_http_connect_overhead 5
 --speed_http_max_transfer_seconds 30
 --speed_http_read_timeout 30
---speed_http_deadline_rate_kibps 0
---speed_http_ramp_fail_factor 0.85
+--speed_http_deadline_rate_kibps 512
 --speed_outage_min_samples 5
 --speed_retain_min_mibps 0
 --speed_avoid_cooldown_min_mibps 0

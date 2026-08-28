@@ -21,7 +21,10 @@ BUILTIN_POLICIES = {
     "GLOBAL",
     "COMPATIBLE",
 }
-MEASUREMENT_PREFIX = re.compile(r"^\d{4,} - (?:N/A|\d+(?:\.\d+)?) - ")
+MEASUREMENT_PREFIX = re.compile(
+    r"^\d{4,} - (?:N/A|\d+(?:\.\d+)?) - "
+    r"(?:(?:N/A|\d+(?:\.\d+)?%) - )?"
+)
 
 
 def should_persist_speed_failures(tested_count: int, failure_count: int) -> bool:
@@ -51,15 +54,25 @@ def original_name(name: str) -> str:
     return MEASUREMENT_PREFIX.sub("", name, count=1)
 
 
-def measured_name(name: str, speed: float | None, latency: int) -> str:
+def measured_name(
+    name: str, speed: float | None, stability: float | None, latency: int
+) -> str:
     speed_label = "N/A" if speed is None else f"{speed:.2f}"
-    return f"{latency:04d} - {speed_label} - {original_name(name)}"
+    stability_label = "N/A" if stability is None else f"{stability:.0%}"
+    return f"{latency:04d} - {speed_label} - {stability_label} - {original_name(name)}"
 
 
-def score_from_name(name: str) -> tuple[bool, float, int]:
-    latency, speed = name.split(" - ", 2)[:2]
+def score_from_name(name: str) -> tuple[bool, float, bool, float, int]:
+    latency, speed, stability = name.split(" - ", 3)[:3]
     numeric_speed = None if speed == "N/A" else float(speed)
-    return numeric_speed is None, -(numeric_speed or 0.0), int(latency)
+    numeric_stability = None if stability == "N/A" else float(stability.removesuffix("%"))
+    return (
+        numeric_speed is None,
+        -(numeric_speed or 0.0),
+        numeric_stability is None,
+        -(numeric_stability or 0.0),
+        int(latency),
+    )
 
 
 def convert_to_str(config: dict) -> dict:
@@ -100,6 +113,13 @@ def prefer_load_balance_default(config: dict) -> bool:
         ref for ref in refs if ref not in load_balance_names
     ]
     return True
+
+
+def configure_final_listener(config: dict) -> None:
+    """Expose one mixed HTTP/SOCKS listener in the generated profile."""
+    config["port"] = 0
+    config["socks-port"] = 0
+    config["mixed-port"] = config_args.mixed_port
 
 
 def rebuild_proxy_groups(
@@ -162,7 +182,7 @@ def rebuild_proxy_groups(
 def choose_keep_fallbacks(
     proxies: list[dict],
     all_valid: dict[str, int],
-    selected: dict[str, tuple[float | None, int]],
+    selected: dict[str, tuple[float | None, float | None, int]],
     keep_hosts: set[str],
 ) -> None:
     """Pinned hosts always retain one endpoint, preferring a latency-valid candidate."""
@@ -180,7 +200,7 @@ def choose_keep_fallbacks(
             continue
         candidates.sort(key=lambda proxy: all_valid.get(str(proxy["name"]), test_args.latency_timeout))
         name = str(candidates[0]["name"])
-        selected[name] = (None, all_valid.get(name, test_args.latency_timeout))
+        selected[name] = (None, None, all_valid.get(name, test_args.latency_timeout))
 
 
 def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
@@ -225,7 +245,7 @@ def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
     speed_failed_hosts = latency_hosts - success_hosts if test_args.test_speed else set()
     na_hosts = {
         name_to_host[name]
-        for name, (speed, _) in selected.items()
+        for name, (speed, _stability, _latency) in selected.items()
         if speed is None and name_to_host[name] not in keep_hosts
     }
 
@@ -247,9 +267,9 @@ def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
 
     final_proxies: list[dict] = []
     final_speeds: dict[str, float | None] = {}
-    for old_name, (speed, latency) in selected.items():
+    for old_name, (speed, stability, latency) in selected.items():
         proxy = name_to_proxy[old_name]
-        proxy["name"] = measured_name(old_name, speed, latency)
+        proxy["name"] = measured_name(old_name, speed, stability, latency)
         final_speeds[str(proxy["name"])] = speed
         final_proxies.append(proxy)
     final_proxies.sort(key=lambda proxy: score_from_name(str(proxy["name"])))
@@ -257,6 +277,7 @@ def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
     final_names = [str(proxy["name"]) for proxy in final_proxies]
     rebuild_proxy_groups(config, old_proxy_names, final_names, final_speeds)
     prefer_load_balance_default(config)
+    configure_final_listener(config)
 
     with open(profile_path, "w", encoding="utf-8") as profile_file:
         profile_file.write(dump_yaml(config))

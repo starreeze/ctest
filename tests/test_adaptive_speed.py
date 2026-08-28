@@ -57,6 +57,7 @@ def make_args_module():
         controller_url="http://127.0.0.1:9090",
         controller_timeout=10.0,
         proxy_url="http://127.0.0.1:7890",
+        mixed_port=7890,
         target_group="select",
         global_group="GLOBAL",
         meta_start_command="mihomo -d profiles",
@@ -80,9 +81,8 @@ def make_args_module():
         speed_http_connect_timeout=10.0,
         speed_http_read_timeout=15.0,
         speed_http_max_transfer_seconds=30.0,
-        speed_http_deadline_rate_kibps=0,
+        speed_http_deadline_rate_kibps=512,
         speed_http_chunk_size_kb=4096,
-        speed_http_ramp_fail_factor=0.85,
         speed_outage_min_samples=5,
         speed_outage_fail_ratio=0.8,
         test_latency_retry=1,
@@ -136,7 +136,6 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.args.speed_http_read_timeout = 15.0
         self.args.speed_http_max_transfer_seconds = 30.0
         self.args.speed_http_chunk_size_kb = 4096
-        self.args.speed_http_ramp_fail_factor = 0.85
         self.args.speed_outage_min_samples = 5
         self.args.speed_outage_fail_ratio = 0.8
         self.args.test_speed = True
@@ -148,6 +147,7 @@ class AdaptiveSpeedTests(unittest.TestCase):
     def sample(self, size_mb, body_seconds, goodput, ttfb_ms=100):
         return self.api.DownloadSample(
             size_bytes=size_mb * self.api.MEBIBYTE,
+            downloaded_bytes=size_mb * self.api.MEBIBYTE,
             body_seconds=body_seconds,
             ttfb_ms=ttfb_ms,
             goodput_mibps=goodput,
@@ -197,6 +197,7 @@ class AdaptiveSpeedTests(unittest.TestCase):
             sample = self.api.download_sample(size_bytes)
 
         self.assertEqual(sample.size_bytes, size_bytes)
+        self.assertEqual(sample.downloaded_bytes, size_bytes)
         self.assertEqual(sample.ttfb_ms, 2000.0)
         self.assertEqual(sample.body_seconds, 2.0)
         self.assertEqual(sample.goodput_mibps, 0.5)
@@ -212,14 +213,15 @@ class AdaptiveSpeedTests(unittest.TestCase):
         self.assertFalse(kwargs["allow_redirects"])
         self.assertIn(str(size_bytes), request.call_args.args[0])
 
-    def test_download_sample_rejects_short_body_and_https_downgrade(self):
+    def test_download_sample_uses_partial_body_and_rejects_https_downgrade(self):
         size_bytes = self.api.MEBIBYTE
         timings = [i * 0.1 for i in range(20)]
         with patch.object(
             self.api.requests, "get", return_value=FakeResponse([b"short"])
         ), patch.object(self.api.time, "perf_counter", side_effect=timings):
-            with self.assertRaisesRegex(ValueError, "returned 5"):
-                self.api.download_sample(size_bytes)
+            sample = self.api.download_sample(size_bytes)
+        self.assertEqual(sample.downloaded_bytes, 5)
+        self.assertGreater(sample.goodput_mibps, 0)
 
         downgrade = FakeResponse([b"x" * size_bytes], url="http://speed.example/download")
         with patch.object(self.api.requests, "get", return_value=downgrade), patch.object(
@@ -227,6 +229,33 @@ class AdaptiveSpeedTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "non-HTTPS"):
                 self.api.download_sample(size_bytes)
+
+    def test_download_sample_uses_bytes_received_before_timeout(self):
+        size_bytes = self.api.MEBIBYTE
+        response = FakeResponse([])
+        response.raw.read = MagicMock(
+            side_effect=[b"x" * (size_bytes // 2), TimeoutError("deadline")]
+        )
+        timings = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.3]
+
+        with patch.object(self.api.requests, "get", return_value=response), patch.object(
+            self.api.time, "perf_counter", side_effect=timings
+        ):
+            sample = self.api.download_sample(size_bytes)
+
+        self.assertEqual(sample.downloaded_bytes, size_bytes // 2)
+        self.assertEqual(sample.body_seconds, 1.0)
+        self.assertEqual(sample.goodput_mibps, 0.5)
+
+    def test_missing_tier_weight_splits_between_nearest_log_sizes(self):
+        mebi = self.api.MEBIBYTE
+        samples = {
+            1 * mebi: [self.sample(1, 1.0, 2.0)],
+            16 * mebi: [self.sample(16, 1.0, 10.0)],
+        }
+        result = self.api.weighted_tier_goodput({1 * mebi, 4 * mebi, 16 * mebi}, samples)
+
+        self.assertAlmostEqual(result, 54 / 7)
 
     def test_download_sample_follows_one_https_redirect(self):
         size_bytes = self.api.MEBIBYTE
@@ -293,13 +322,13 @@ class AdaptiveSpeedTests(unittest.TestCase):
             self.sample(16, 1.4, 12.0),
         ]
         with patch.object(self.api, "try_download_sample", side_effect=samples) as download:
-            score = self.api.adaptive_download_speed()
+            result = self.api.adaptive_download_speed()
 
-        self.assertEqual(score, 5.0)
+        self.assertEqual(result, self.api.SpeedResult(5.0, 1.0))
         called_sizes = [call.args[0] // self.api.MEBIBYTE for call in download.call_args_list]
         self.assertEqual(called_sizes, [1, 4, 8, 16, 16])
 
-    def test_adaptive_failure_falls_back_to_last_success_and_penalizes(self):
+    def test_adaptive_failure_moves_missing_tier_weight_and_tracks_stability(self):
         samples = [
             self.sample(1, 0.2, 5.0),
             None,
@@ -307,15 +336,16 @@ class AdaptiveSpeedTests(unittest.TestCase):
             self.sample(1, 0.2, 8.0),
         ]
         with patch.object(self.api, "try_download_sample", side_effect=samples) as download:
-            score = self.api.adaptive_download_speed()
+            result = self.api.adaptive_download_speed()
 
-        self.assertAlmostEqual(score, 0.85 * 4.25)
+        self.assertAlmostEqual(result.throughput_mibps, 4.25)
+        self.assertAlmostEqual(result.stability, 2 / 3)
         called_sizes = [call.args[0] // self.api.MEBIBYTE for call in download.call_args_list]
         self.assertEqual(called_sizes, [1, 4, 1])
 
     def test_adaptive_all_failures_return_na(self):
         with patch.object(self.api, "try_download_sample", return_value=None) as download:
-            self.assertIsNone(self.api.adaptive_download_speed())
+            self.assertEqual(self.api.adaptive_download_speed(), self.api.SpeedResult(None, None))
         called_sizes = [call.args[0] // self.api.MEBIBYTE for call in download.call_args_list]
         self.assertEqual(called_sizes, [1, 1])
 
@@ -328,14 +358,14 @@ class AdaptiveSpeedTests(unittest.TestCase):
             self.sample(4, 0.9, 10.0),
         ]
         with patch.object(self.api, "try_download_sample", side_effect=samples) as download:
-            score = self.api.adaptive_download_speed()
-        self.assertEqual(score, 6.5)
+            result = self.api.adaptive_download_speed()
+        self.assertEqual(result, self.api.SpeedResult(6.0, 1.0))
         called_sizes = [call.args[0] // self.api.MEBIBYTE for call in download.call_args_list]
         self.assertEqual(called_sizes, [1, 4, 4])
 
     def test_adaptive_call_timeout_returns_na(self):
         with patch.object(self.api, "call_adaptive_speedtest", side_effect=self.api.FunctionTimedOut("timeout")):
-            self.assertIsNone(self.api.test_download_adaptive())
+            self.assertEqual(self.api.test_download_adaptive(), self.api.SpeedResult(None, None))
 
     def test_try_download_sample_treats_urllib3_timeout_as_failure(self):
         from urllib3.exceptions import ReadTimeoutError
@@ -351,14 +381,16 @@ class AdaptiveSpeedTests(unittest.TestCase):
         response = SimpleNamespace(status_code=204, text="")
         self.args.speed_test_mode = "adaptive"
         with patch.object(self.api, "put", return_value=response), patch.object(
-            self.api, "test_download_speedtest", return_value=7.0
-        ) as sdk, patch.object(self.api, "test_download_adaptive", return_value=9.0) as adaptive:
-            self.assertEqual(self.api.test_speed_single("node"), 9.0)
+            self.api, "test_download_speedtest", return_value=self.api.SpeedResult(7.0, 1.0)
+        ) as sdk, patch.object(
+            self.api, "test_download_adaptive", return_value=self.api.SpeedResult(9.0, 0.5)
+        ) as adaptive:
+            self.assertEqual(self.api.test_speed_single("node"), self.api.SpeedResult(9.0, 0.5))
             adaptive.assert_called_once_with()
             sdk.assert_not_called()
 
             self.args.speed_test_mode = "sdk"
-            self.assertEqual(self.api.test_speed_single("node"), 7.0)
+            self.assertEqual(self.api.test_speed_single("node"), self.api.SpeedResult(7.0, 1.0))
             sdk.assert_called_once_with()
 
     def test_controller_session_ignores_proxy_environment(self):
@@ -424,6 +456,14 @@ class AdaptiveSpeedTests(unittest.TestCase):
                 )
             self.assertFalse(os.path.exists(test_path))
 
+    def test_final_listener_uses_configured_mixed_port(self):
+        profile = {"port": 7000, "socks-port": 7001, "mixed-port": 7002}
+        self.speed.configure_final_listener(profile)
+        self.assertEqual(
+            profile,
+            {"port": 0, "socks-port": 0, "mixed-port": 7890},
+        )
+
     def test_get_speed_switches_to_global_and_restores(self):
         config_response = SimpleNamespace(
             status_code=200,
@@ -435,15 +475,52 @@ class AdaptiveSpeedTests(unittest.TestCase):
         with patch.object(self.api, "get", return_value=config_response), patch.object(
             self.api, "patch", return_value=ok
         ) as mode, patch.object(self.api, "put", return_value=ok) as select, patch.object(
-            self.api, "test_download_speedtest", return_value=1.0
+            self.api, "test_download_speedtest", return_value=self.api.SpeedResult(1.0, 1.0)
         ):
             result = self.api.get_speed([("node-a", 120)], {"node-a": "host-a"})
 
-        self.assertEqual(result, ({"node-a": (1.0, 120)}, {"host-a"}))
+        self.assertEqual(result, ({"node-a": (1.0, 1.0, 120)}, {"host-a"}))
         self.assertEqual(mode.call_args_list[0].kwargs["json"], {"mode": "global"})
         self.assertEqual(mode.call_args_list[-1].kwargs["json"], {"mode": "rule"})
         selected_groups = [call.args[0].rsplit("/", 1)[-1] for call in select.call_args_list]
         self.assertEqual(selected_groups, ["GLOBAL", "select"])
+
+    def test_get_speed_propagates_interrupt_after_restoring_core_mode(self):
+        config_response = SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"mode": "rule"},
+            raise_for_status=lambda: None,
+        )
+        ok = SimpleNamespace(status_code=204, text="")
+        with patch.object(self.api, "get", return_value=config_response), patch.object(
+            self.api, "patch", return_value=ok
+        ) as mode, patch.object(self.api, "put", return_value=ok), patch.object(
+            self.api, "test_download_speedtest", side_effect=KeyboardInterrupt
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self.api.get_speed([("node-a", 120)], {"node-a": "host-a"})
+
+        self.assertEqual(mode.call_args_list[0].kwargs["json"], {"mode": "global"})
+        self.assertEqual(mode.call_args_list[-1].kwargs["json"], {"mode": "rule"})
+
+    def test_get_latency_ignores_string_metadata(self):
+        response = {
+            "node-a": 120,
+            "node-b": 240,
+            "message": "partial timeout",
+        }
+        with patch.object(self.api, "get_latency_once", return_value=response):
+            result = self.api.get_latency(["node-a", "node-b"], "test-group")
+
+        self.assertEqual(result, {"node-a": 120, "node-b": 240})
+
+    def test_get_latency_returns_empty_when_response_has_no_proxy_delays(self):
+        response = {"message": "timeout", "status": 504}
+        with patch.object(self.api, "get_latency_once", return_value=response):
+            result = self.api.get_latency(["node-a"], "test-group")
+
+        self.assertEqual(result, {})
 
     def test_get_speed_uses_inclusive_retain_threshold(self):
         config_response = SimpleNamespace(
@@ -456,7 +533,9 @@ class AdaptiveSpeedTests(unittest.TestCase):
         with patch.object(self.api, "get", return_value=config_response), patch.object(
             self.api, "patch", return_value=ok
         ), patch.object(self.api, "put", return_value=ok), patch.object(
-            self.api, "test_download_speedtest", side_effect=[0.25, 0.0]
+            self.api,
+            "test_download_speedtest",
+            side_effect=[self.api.SpeedResult(0.25, 1.0), self.api.SpeedResult(0.0, 1.0)],
         ) as download:
             result = self.api.get_speed(
                 [("slow-latency", 300), ("fast-latency", 100), ("other", 50)],
@@ -464,7 +543,7 @@ class AdaptiveSpeedTests(unittest.TestCase):
             )
         self.assertEqual(
             result,
-            ({"other": (0.25, 50), "fast-latency": (0.0, 100)}, {"other", "same"}),
+            ({"other": (0.25, 1.0, 50), "fast-latency": (0.0, 1.0, 100)}, {"other", "same"}),
         )
         self.assertEqual(download.call_count, 2)
 
@@ -481,13 +560,15 @@ class AdaptiveSpeedTests(unittest.TestCase):
         with patch.object(self.api, "get", return_value=config_response), patch.object(
             self.api, "patch", return_value=ok
         ), patch.object(self.api, "put", return_value=ok), patch.object(
-            self.api, "test_download_speedtest", side_effect=[None, 5.0]
+            self.api,
+            "test_download_speedtest",
+            side_effect=[self.api.SpeedResult(None, None), self.api.SpeedResult(5.0, 1.0)],
         ) as download:
             result = self.api.get_speed(
                 [("first", 50), ("second", 100)],
                 {"first": "same", "second": "same"},
             )
-        self.assertEqual(result, ({"first": (None, 50)}, {"same"}))
+        self.assertEqual(result, ({"first": (None, None, 50)}, {"same"}))
         download.assert_called_once_with()
 
     def test_numeric_below_retain_can_avoid_cooldown(self):
@@ -503,7 +584,9 @@ class AdaptiveSpeedTests(unittest.TestCase):
         with patch.object(self.api, "get", return_value=config_response), patch.object(
             self.api, "patch", return_value=ok
         ), patch.object(self.api, "put", return_value=ok), patch.object(
-            self.api, "test_download_speedtest", side_effect=[0.75, 1.5]
+            self.api,
+            "test_download_speedtest",
+            side_effect=[self.api.SpeedResult(0.75, 1.0), self.api.SpeedResult(1.5, 1.0)],
         ):
             result = self.api.get_speed(
                 [("first", 50), ("second", 100)],
@@ -526,7 +609,11 @@ class AdaptiveSpeedTests(unittest.TestCase):
         ok = SimpleNamespace(status_code=204, text="")
         with patch.object(self.api, "get", return_value=config_response), patch.object(
             self.api, "put", return_value=ok
-        ), patch.object(self.api, "test_download_speedtest", return_value=float("nan")):
+        ), patch.object(
+            self.api,
+            "test_download_speedtest",
+            return_value=self.api.SpeedResult(float("nan"), 1.0),
+        ):
             with self.assertRaisesRegex(ValueError, "finite and non-negative"):
                 self.api.get_speed([("node", 50)], {"node": "host"})
 
@@ -601,7 +688,7 @@ class AdaptiveSpeedTests(unittest.TestCase):
 
     def test_semantic_group_rebuild_ignores_order_and_removes_test_groups(self):
         old = {"old-a", "old-b"}
-        final = ["0100 - 2.00 - new-a", "0200 - 0.25 - new-b"]
+        final = ["0100 - 2.00 - 80% - new-a", "0200 - 0.25 - 100% - new-b"]
         config = {
             "proxy-groups": [
                 {"name": "static", "type": "select", "proxies": ["DIRECT"]},
@@ -653,8 +740,8 @@ class AdaptiveSpeedTests(unittest.TestCase):
 
     def test_na_is_stripped_on_rerun_sorted_last_and_excluded_from_load_balance(self):
         old = {"old-a", "old-b"}
-        numeric = "0100 - 0.00 - numeric"
-        unavailable = "0050 - N/A - unavailable"
+        numeric = "0100 - 0.00 - 50% - numeric"
+        unavailable = "0050 - N/A - N/A - unavailable"
         config = {
             "proxy-groups": [
                 {"name": "select", "type": "select", "proxies": ["old-a", "old-b"]},
@@ -670,14 +757,27 @@ class AdaptiveSpeedTests(unittest.TestCase):
         )
         self.assertEqual(config["proxy-groups"][0]["proxies"], [numeric, unavailable])
         self.assertEqual(config["proxy-groups"][1]["proxies"], [numeric])
-        self.assertEqual(self.speed.original_name("0050 - N/A - original"), "original")
+        self.assertEqual(self.speed.original_name("0050 - N/A - N/A - original"), "original")
         self.assertGreater(
             self.speed.score_from_name(unavailable),
             self.speed.score_from_name(numeric),
         )
 
+    def test_score_orders_speed_then_stability_then_latency(self):
+        names = [
+            "0050 - 1.00 - 50% - low-stability",
+            "0200 - 2.00 - 100% - slow-latency",
+            "0100 - 2.00 - 100% - fast-latency",
+            "0020 - 2.00 - 75% - medium-stability",
+        ]
+
+        self.assertEqual(
+            sorted(names, key=self.speed.score_from_name),
+            [names[2], names[1], names[3], names[0]],
+        )
+
     def test_all_na_load_balance_falls_back_to_direct(self):
-        unavailable = "0050 - N/A - unavailable"
+        unavailable = "0050 - N/A - N/A - unavailable"
         config = {
             "proxy-groups": [
                 {"name": "balance", "type": "load-balance", "proxies": ["old"]},
