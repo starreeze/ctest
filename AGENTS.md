@@ -9,7 +9,7 @@ This repository builds a usable Clash/Mihomo profile from public proxy feeds. Th
 3. `function/speed.py` latency-tests every candidate, groups survivors by host, and speed-tests each host's endpoints in latency order until one returns N/A or meets the retention threshold. It records one host outcome in SQLite, renames the winning endpoint as `latency - speed|N/A - original_name`, and reconstructs proxy groups semantically.
 4. `main.py` orchestrates the full workflow and may start/stop a local Mihomo process in `--mode meta`.
 
-The scripts mutate the newest configured profile in place. Treat profile writes and the failure database as stateful operations, not harmless test fixtures.
+The scripts perform mutations on a sibling staging copy and atomically replace the newest configured profile only after the requested workflow succeeds. Treat profile publication and the failure database as stateful operations, not harmless test fixtures.
 
 ## Repository map
 

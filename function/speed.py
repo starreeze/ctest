@@ -10,7 +10,7 @@ from common.api import get_latency, get_speed
 from common.args import apply_runtime_proxy_env, config_args, get_newest_profile, logger, test_args
 from common.db import ProxyFailureDB
 from common.feeds import load_keep_hosts
-from common.utils import dump_yaml
+from common.utils import dump_yaml, staged_profile_update
 
 
 BUILTIN_POLICIES = {
@@ -203,10 +203,13 @@ def choose_keep_fallbacks(
         selected[name] = (None, None, all_valid.get(name, test_args.latency_timeout))
 
 
-def test_latency_speed(failure_cooldown_anchor: float | None = None) -> dict:
+def test_latency_speed(
+    failure_cooldown_anchor: float | None = None,
+    profile_path: str | None = None,
+) -> dict:
     if failure_cooldown_anchor is None:
         failure_cooldown_anchor = time.time()
-    profile_path = get_newest_profile()
+    profile_path = profile_path or get_newest_profile()
     with open(profile_path, "r", encoding="utf-8") as profile_file:
         config = convert_to_str(yaml.safe_load(profile_file))
     proxies = config.get("proxies", [])
@@ -300,11 +303,12 @@ if __name__ == "__main__":
 
     apply_runtime_proxy_env()
     path = get_newest_profile()
-    run_single_stage(
-        "speed",
-        test_latency_speed,
-        config_args.run_history_path,
-        config_args.run_origin,
-        path,
-        logger,
-    )
+    with staged_profile_update(path) as staged_path:
+        run_single_stage(
+            "speed",
+            lambda: test_latency_speed(profile_path=staged_path),
+            config_args.run_history_path,
+            config_args.run_origin,
+            path,
+            logger,
+        )

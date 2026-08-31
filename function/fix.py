@@ -14,7 +14,12 @@ from common.args import config_args as args
 from common.args import get_newest_profile, logger
 from common.db import ProxyFailureDB
 from common.feeds import load_keep_hosts
-from common.utils import dump_yaml, load_raw_clash_yaml, mihomo_accepts_vless_encryption
+from common.utils import (
+    dump_yaml,
+    load_raw_clash_yaml,
+    mihomo_accepts_vless_encryption,
+    staged_profile_update,
+)
 
 
 def create_proxy_groups(proxy_names: list[str], max_size: int) -> list[dict]:
@@ -353,11 +358,12 @@ if __name__ == "__main__":
     from common.run_history import run_single_stage
 
     path = get_newest_profile()
-    run_single_stage(
-        "fix",
-        lambda: fix(path),
-        args.run_history_path,
-        args.run_origin,
-        path,
-        logger,
-    )
+    with staged_profile_update(path) as staged_path:
+        run_single_stage(
+            "fix",
+            lambda: fix(staged_path),
+            args.run_history_path,
+            args.run_origin,
+            path,
+            logger,
+        )

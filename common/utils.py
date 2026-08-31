@@ -1,5 +1,9 @@
 import base64
+import contextlib
+import os
 import re
+import shutil
+import tempfile
 
 import yaml
 
@@ -12,6 +16,27 @@ class FlowStyleDict(dict):
 
 class ClashDumper(yaml.SafeDumper):
     pass
+
+
+@contextlib.contextmanager
+def staged_profile_update(profile_path: str):
+    """Yield a sibling working copy and atomically publish it on success."""
+    profile_dir = os.path.dirname(os.path.abspath(profile_path))
+    basename, extension = os.path.splitext(os.path.basename(profile_path))
+    fd, staged_path = tempfile.mkstemp(
+        prefix=f".{basename}.staging-",
+        suffix=extension,
+        dir=profile_dir,
+    )
+    os.close(fd)
+    try:
+        shutil.copy2(profile_path, staged_path)
+        yield staged_path
+        os.replace(staged_path, profile_path)
+    except BaseException:
+        if os.path.exists(staged_path):
+            os.unlink(staged_path)
+        raise
 
 
 def _represent_str(dumper: yaml.Dumper, data: str) -> yaml.Node:

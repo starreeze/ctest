@@ -4,9 +4,6 @@
 
 import contextlib
 import fcntl
-import os
-import shutil
-import tempfile
 import time
 
 from common.args import (
@@ -19,6 +16,7 @@ from common.args import (
 )
 from common.api import MetaLifecycle
 from common.run_history import RunRecorder
+from common.utils import staged_profile_update
 from function.fix import fix
 from function.speed import test_latency_speed
 from function.update import update
@@ -32,30 +30,6 @@ def single_run_lock():
         except BlockingIOError as exc:
             raise RuntimeError(f"Another profile update holds {config_args.run_lock_path}") from exc
         yield
-
-
-@contextlib.contextmanager
-def restore_profile_on_failure(profile_path: str):
-    profile_dir = os.path.dirname(os.path.abspath(profile_path))
-    fd, backup_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(profile_path)}.rollback-",
-        dir=profile_dir,
-    )
-    os.close(fd)
-    try:
-        shutil.copy2(profile_path, backup_path)
-    except BaseException:
-        os.unlink(backup_path)
-        raise
-
-    try:
-        yield
-    except BaseException:
-        os.replace(backup_path, profile_path)
-        logger.warning(f"Restored profile after failed run: {profile_path}")
-        raise
-    else:
-        os.unlink(backup_path)
 
 
 def main():
@@ -72,21 +46,29 @@ def main():
             try:
                 profile_path = get_newest_profile()
                 run.set_profile(profile_path)
-                with restore_profile_on_failure(profile_path):
-                    if test_args.update_profile:
-                        run.record_stage("update", update())
-                        run.record_stage("fix", fix(profile_path))
-                        if config_args.mode == "meta":
-                            meta.start(profile_path)
-                        else:
-                            input("Please reactivate profile manually and press ENTER to run latency test ...")
-                    apply_runtime_proxy_env()
-                    run.record_stage(
-                        "speed",
-                        test_latency_speed(failure_cooldown_anchor=run_started_at),
-                    )
+                with staged_profile_update(profile_path) as staged_path:
+                    try:
+                        if test_args.update_profile:
+                            run.record_stage("update", update(staged_path))
+                            run.record_stage("fix", fix(staged_path))
+                            if config_args.mode == "meta":
+                                meta.start(staged_path)
+                            else:
+                                input(
+                                    f"Please activate temporary profile {staged_path} manually and "
+                                    "press ENTER to run latency test ..."
+                                )
+                        apply_runtime_proxy_env()
+                        run.record_stage(
+                            "speed",
+                            test_latency_speed(
+                                failure_cooldown_anchor=run_started_at,
+                                profile_path=staged_path,
+                            ),
+                        )
+                    finally:
+                        meta.stop()
             finally:
-                meta.stop()
                 clear_proxy_env()
     except BaseException as exc:
         summary = run.finish(exc)
